@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wolf Quant - Live Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes pulse-red { 0%, 100% { background-color: rgba(220, 38, 38, 1); border-color: rgba(239, 68, 68, 1); } 50% { background-color: rgba(153, 27, 27, 1); border-color: rgba(220, 38, 38, 1); } }
+        .alerta-ativo { animation: pulse-red 2s infinite; }
+        .text-3xs { font-size: 0.65rem; } .text-2xs { font-size: 0.75rem; }
+    </style>
+</head>
+<body class="bg-gray-950 text-gray-100 font-sans min-h-screen">
+    <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center shadow-lg">
+        <div class="flex items-center space-x-3"><span class="text-2xl">🐺</span><h1 class="text-xl font-bold tracking-wider text-amber-500">LOBO QUANT PLATFORM</h1></div>
+        <div class="flex items-center space-x-2 text-sm bg-gray-950 px-3 py-1.5 rounded-md border border-gray-800"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span><span class="text-gray-400 font-mono">VPS STREAM: ATIVO</span></div>
+    </header>
+
+    <main class="p-6">
+        <div id="grid-jogos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div class="col-span-full text-center py-20 text-gray-500 font-mono border border-dashed border-gray-800 rounded-xl bg-gray-900/10">🔍 Conectando à esteira de dados assíncronos da VPS...</div>
+        </div>
+    </main>
+
+    <script>
+        const VPS_IP = 'localhost'; // Ajuste para o IP da VPS se necessário
+        const eventSource = new EventSource(`http://${VPS_IP}:3000/events`);
+        const gridJogos = document.getElementById('grid-jogos');
+
+        eventSource.onmessage = function(event) {
+            const jogos = JSON.parse(event.data);
+            if (jogos.length === 0) {
+                gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Pressione [ESPAÇO] no terminal Linux para monitorar.</div>`;
+                return;
+            }
+            gridJogos.innerHTML = '';
+
+            jogos.forEach(jogo => {
+                const totalAtq = (jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora) || 1;
+                const pctCasaAPM = Math.round((jogo.momentum.ataquesCasa / totalAtq) * 100);
+                const pctForaAPM = 100 - pctCasaAPM;
+
+                const posseCasa = parseInt(jogo.posseBolaCasa) || 50;
+                const posseFora = parseInt(jogo.posseBolaFora) || (100 - posseCasa);
+
+                let cardBorda = "border-gray-800 bg-gray-900/60";
+                let statusBadge = "bg-gray-800 text-gray-400";
+
+                if (jogo.statusGatilho.includes('GATILHO') || jogo.statusGatilho.includes('ALERTA')) {
+                    cardBorda = "border-red-600 alerta-ativo shadow-red-900/40 shadow-2xl text-white";
+                    statusBadge = "bg-white text-red-700 font-black animate-pulse";
+                } else if (jogo.pressao >= 1.5) {
+                    cardBorda = "border-amber-600 bg-gray-900 shadow-amber-950/20 shadow-xl";
+                    statusBadge = "bg-amber-500 text-gray-950 font-black";
+                }
+
+                const cardHtml = `
+                    <div class="border rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 ${cardBorda}">
+                        <div class="flex justify-between items-center mb-4">
+                            <span class="font-mono text-xs font-black tracking-wider bg-gray-950 px-2.5 py-1 rounded-md text-amber-500 border border-gray-800">⏱️ ${jogo.noIntervalo ? 'HT' : jogo.tempo + "'"}</span>
+                            <span class="text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge}">${jogo.statusGatilho}</span>
+                        </div>
+
+                        <div class="text-center my-1">
+                            <h2 class="text-md font-bold text-gray-100 tracking-tight truncate px-2">${jogo.nomePartida}</h2>
+                            <div class="text-3xl font-black font-mono tracking-widest text-amber-500 my-2 bg-gray-950 py-1.5 rounded-xl border border-gray-800/60 shadow-inner">${jogo.placar || '0 - 0'}</div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 text-2xs font-mono bg-gray-950/50 p-2.5 rounded-xl border border-gray-900 my-2">
+                            <div class="text-gray-400">🤖 xG CASA: <span class="text-amber-500 font-bold">${jogo.xgCasa.toFixed(2)}</span></div>
+                            <div class="text-right text-gray-400">🤖 xG FORA: <span class="text-gray-200 font-bold">${jogo.xgFora.toFixed(2)}</span></div>
+                            <div class="col-span-2 border-t border-gray-900/60 my-1"></div>
+                            <div class="col-span-2 text-center text-amber-400 font-black tracking-wide">🔥 MOMENTUM: ${jogo.pressao.toFixed(2)} AP/Min</div>
+                        </div>
+
+                        <div class="mt-2">
+                            <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
+                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60">CASA: <strong class="text-amber-500">${jogo.momentum.ataquesCasa} AP</strong></span>
+                                <span class="font-bold tracking-wider text-gray-500 text-3xs">📊 VELOCIDADE APM (10M)</span>
+                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60 text-right">FORA: <strong class="text-gray-300">${jogo.momentum.ataquesFora} AP</strong></span>
+                            </div>
+                            <div class="w-full bg-gray-950 rounded-full h-3 flex overflow-hidden border border-gray-800 shadow-inner">
+                                <div class="bg-amber-500 h-full transition-all duration-500 flex justify-end items-center pr-1" style="width: ${pctCasaAPM}%">${pctCasaAPM > 18 ? `<span class="text-3xs font-black text-gray-950">${pctCasaAPM}%</span>` : ''}</div>
+                                <div class="bg-gray-700 h-full transition-all duration-500 flex justify-start items-center pl-1" style="width: ${pctForaAPM}%">${pctForaAPM > 18 ? `<span class="text-3xs font-black text-white">${pctForaAPM}%</span>` : ''}</div>
+                            </div>
+                        </div>
+
+                        <div class="mt-2.5">
+                            <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
+                                <span class="text-amber-500/90 font-semibold">${posseCasa}%</span>
+                                <span class="font-bold tracking-wider text-gray-500 text-3xs">🔄 POSSE DE BOLA JOGO</span>
+                                <span class="text-gray-400 font-semibold text-right">${posseFora}%</span>
+                            </div>
+                            <div class="w-full bg-gray-950 rounded-full h-2 flex overflow-hidden border border-gray-800/50">
+                                <div class="bg-gradient-to-r from-amber-600 to-amber-500 h-full transition-all duration-500" style="width: ${posseCasa}%"></div>
+                                <div class="bg-gray-600 h-full transition-all duration-500" style="width: ${posseFora}%"></div>
+                            </div>
+                        </div>
+
+                        <div class="mt-3 bg-gray-950/40 border border-gray-900 rounded-xl p-2 text-2xs font-mono">
+                            <div class="text-center font-bold text-gray-500 text-3xs tracking-wider border-b border-gray-900/50 pb-1 mb-1.5">📊 QUADRO 1: TELEMETRIA TOTAL (MACRO)</div>
+                            <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Atq. Perigosos:</span><span class="text-amber-500 font-bold">${jogo.atqPerigososCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.atqPerigososFora}</span></div>
+                            <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.chutesNoAlvoCasa}/${jogo.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.chutesNoAlvoFora}/${jogo.chutesParaForaFora}</span></div>
+                            <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.escanteiosFora}</span></div>
+                        </div>
+
+                        <div class="mt-2 bg-gray-950/20 border border-gray-900 rounded-xl p-2 text-2xs font-mono">
+                            <div class="text-center font-bold text-gray-500 text-3xs tracking-wider border-b border-gray-900/50 pb-1 mb-1.5">🔬 QUADRO 2: MOMENTUM REAL (MICRO 10M)</div>
+                            <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.momentum.chutesNoAlvoCasa}/${jogo.momentum.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.chutesNoAlvoFora}/${jogo.momentum.chutesParaForaFora}</span></div>
+                            <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.momentum.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.escanteiosFora}</span></div>
+                        </div>
+                    </div>
+                `;
+                gridJogos.innerHTML += cardHtml;
+            });
+        };
+        eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
+    </script>
+</body>
+</html>
