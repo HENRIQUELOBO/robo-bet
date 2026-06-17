@@ -9,34 +9,129 @@
         @keyframes pulse-red { 0%, 100% { background-color: rgba(220, 38, 38, 1); border-color: rgba(239, 68, 68, 1); } 50% { background-color: rgba(153, 27, 27, 1); border-color: rgba(220, 38, 38, 1); } }
         .alerta-ativo { animation: pulse-red 2s infinite; }
         .text-3xs { font-size: 0.65rem; } .text-2xs { font-size: 0.75rem; }
+        #modal-momentum { display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); backdrop-filter:blur(4px); align-items:center; justify-content:center; }
+        #modal-momentum.open { display:flex; }
+        #modal-momentum img { max-width:92vw; max-height:88vh; border-radius:12px; border:1px solid #374151; box-shadow:0 0 60px rgba(0,0,0,0.8); }
+        .momentum-thumb { cursor:zoom-in; transition:opacity .2s; }
+        .momentum-thumb:hover { opacity:.85; }
     </style>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans min-h-screen">
-    <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 flex justify-between items-center shadow-lg">
-        <div class="flex items-center space-x-3"><span class="text-2xl">🐺</span><h1 class="text-xl font-bold tracking-wider text-amber-500">LOBO QUANT PLATFORM</h1></div>
-        <div class="flex items-center space-x-2 text-sm bg-gray-950 px-3 py-1.5 rounded-md border border-gray-800"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span><span class="text-gray-400 font-mono">VPS STREAM: ATIVO</span></div>
+    <header class="border-b border-gray-800 bg-gray-900 px-6 py-4 shadow-lg">
+        <div class="flex justify-between items-center mb-4">
+            <div class="flex items-center space-x-3"><span class="text-2xl">🐺</span><h1 class="text-xl font-bold tracking-wider text-amber-500">LOBO QUANT PLATFORM</h1></div>
+            <div class="flex items-center space-x-2 text-sm bg-gray-950 px-3 py-1.5 rounded-md border border-gray-800"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span><span class="text-gray-400 font-mono">VPS STREAM: ATIVO</span></div>
+        </div>
+        <div class="flex items-center gap-3">
+            <input
+                id="input-url"
+                type="url"
+                placeholder="🔗 Cole a URL do RadarFutebol aqui..."
+                class="flex-1 bg-gray-950 border border-gray-700 text-gray-100 text-sm font-mono rounded-lg px-4 py-2.5 outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 placeholder-gray-600 transition"
+            />
+            <button
+                id="btn-iniciar"
+                onclick="adicionarJogo()"
+                class="bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-gray-950 font-black text-sm tracking-wider px-5 py-2.5 rounded-lg transition flex items-center gap-2 whitespace-nowrap"
+            >
+                ▶ INICIAR
+            </button>
+        </div>
+        <p id="msg-status" class="text-xs font-mono mt-2 h-4 text-gray-500"></p>
     </header>
 
     <main class="p-6">
+        <!-- Modal de zoom do gráfico Sofascore -->
+        <div id="modal-momentum" onclick="fecharModal()">
+            <div style="position:relative;" onclick="event.stopPropagation()">
+                <img id="modal-momentum-img" src="" alt="Momentum Chart" />
+                <button onclick="fecharModal()" style="position:absolute;top:-14px;right:-14px;background:#1f2937;border:1px solid #374151;color:#9ca3af;border-radius:50%;width:30px;height:30px;font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>
+            </div>
+        </div>
         <div id="grid-jogos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div class="col-span-full text-center py-20 text-gray-500 font-mono border border-dashed border-gray-800 rounded-xl bg-gray-900/10">🔍 Conectando à esteira de dados assíncronos da VPS...</div>
         </div>
     </main>
 
     <script>
-        const VPS_IP = 'localhost'; // Ajuste para o IP da VPS se necessário
+        const VPS_IP = 'localhost';
         const eventSource = new EventSource(`http://${VPS_IP}:3000/events`);
         const gridJogos = document.getElementById('grid-jogos');
+
+        function abrirModal(src) {
+            document.getElementById('modal-momentum-img').src = src;
+            document.getElementById('modal-momentum').classList.add('open');
+        }
+        function fecharModal() {
+            document.getElementById('modal-momentum').classList.remove('open');
+            document.getElementById('modal-momentum-img').src = '';
+        }
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharModal(); });
+        // Cache local de screenshots — evita re-render quando base64 não mudou
+        const _imgCache = {};
+
+        async function adicionarJogo() {
+            const input = document.getElementById('input-url');
+            const btn = document.getElementById('btn-iniciar');
+            const msg = document.getElementById('msg-status');
+            const url = input.value.trim();
+
+            if (!url.startsWith('http')) {
+                msg.textContent = '⚠️ URL inválida. Cole um link completo do RadarFutebol.';
+                msg.className = 'text-xs font-mono mt-2 h-4 text-red-400';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '⏳ Abrindo...';
+            msg.textContent = '';
+
+            try {
+                const res = await fetch(`http://${VPS_IP}:3000/add-game`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    msg.textContent = '✅ Jogo adicionado ao pool!';
+                    msg.className = 'text-xs font-mono mt-2 h-4 text-emerald-400';
+                    input.value = '';
+                } else {
+                    msg.textContent = `❌ Erro: ${data.erro}`;
+                    msg.className = 'text-xs font-mono mt-2 h-4 text-red-400';
+                }
+            } catch (e) {
+                msg.textContent = '❌ Falha na ligação ao servidor.';
+                msg.className = 'text-xs font-mono mt-2 h-4 text-red-400';
+            }
+
+            btn.disabled = false;
+            btn.textContent = '▶ INICIAR';
+            setTimeout(() => { msg.textContent = ''; }, 4000);
+        }
+
+        // Permite iniciar com Enter no campo de input
+        document.getElementById('input-url').addEventListener('keydown', e => {
+            if (e.key === 'Enter') adicionarJogo();
+        });
 
         eventSource.onmessage = function(event) {
             const jogos = JSON.parse(event.data);
             if (jogos.length === 0) {
-                gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Pressione [ESPAÇO] no terminal Linux para monitorar.</div>`;
+                gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Cole uma URL acima para começar a monitorar.</div>`;
                 return;
             }
             gridJogos.innerHTML = '';
 
             jogos.forEach(jogo => {
+                // Actualiza o cache de screenshot apenas quando o timestamp mudou
+                if (jogo.sofascoreMomentumImg && jogo.sofascoreMomentumTs) {
+                    if (_imgCache[jogo.id]?.ts !== jogo.sofascoreMomentumTs) {
+                        _imgCache[jogo.id] = { ts: jogo.sofascoreMomentumTs, img: jogo.sofascoreMomentumImg };
+                    }
+                }
+                const momentumImg = _imgCache[jogo.id]?.img || null;
                 const totalAtq = (jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora) || 1;
                 const pctCasaAPM = Math.round((jogo.momentum.ataquesCasa / totalAtq) * 100);
                 const pctForaAPM = 100 - pctCasaAPM;
@@ -50,6 +145,12 @@
                 if (jogo.statusGatilho.includes('GATILHO') || jogo.statusGatilho.includes('ALERTA')) {
                     cardBorda = "border-red-600 alerta-ativo shadow-red-900/40 shadow-2xl text-white";
                     statusBadge = "bg-white text-red-700 font-black animate-pulse";
+                } else if (jogo.statusGatilho.includes('LAY 0x0')) {
+                    cardBorda = "border-blue-500 bg-gray-900 shadow-blue-950/20 shadow-xl";
+                    statusBadge = "bg-blue-400 text-gray-950 font-black animate-pulse";
+                } else if (jogo.statusGatilho.includes('LAY')) {
+                    cardBorda = "border-yellow-500 bg-gray-900 shadow-yellow-950/20 shadow-xl";
+                    statusBadge = "bg-yellow-400 text-gray-950 font-black animate-pulse";
                 } else if (jogo.pressao >= 1.5) {
                     cardBorda = "border-amber-600 bg-gray-900 shadow-amber-950/20 shadow-xl";
                     statusBadge = "bg-amber-500 text-gray-950 font-black";
@@ -74,6 +175,28 @@
                             <div class="col-span-2 text-center text-amber-400 font-black tracking-wide">🔥 MOMENTUM: ${jogo.pressao.toFixed(2)} AP/Min</div>
                         </div>
 
+                        ${jogo.betfairOdds && jogo.betfairOdds.statusMercado === 'OPEN' ? `
+                        <div class="bg-gray-950/70 border border-emerald-900/50 rounded-xl p-2 text-2xs font-mono mb-2">
+                            <div class="text-center font-bold text-emerald-500/80 text-3xs tracking-wider border-b border-emerald-900/30 pb-1 mb-1.5">🎰 ODDS BETFAIR (MATCH ODDS)</div>
+                            <div class="grid grid-cols-3 gap-1 text-center">
+                                <div>
+                                    <div class="text-gray-500 text-3xs mb-0.5">CASA</div>
+                                    <div class="text-emerald-400 font-black text-sm">${jogo.betfairOdds.oddCasaBack ?? '—'}</div>
+                                    <div class="text-red-400/70 text-3xs">lay ${jogo.betfairOdds.oddCasaLay ?? '—'}</div>
+                                </div>
+                                <div>
+                                    <div class="text-gray-500 text-3xs mb-0.5">EMPATE</div>
+                                    <div class="text-emerald-400 font-black text-sm">${jogo.betfairOdds.oddEmpateBack ?? '—'}</div>
+                                    <div class="text-red-400/70 text-3xs">lay ${jogo.betfairOdds.oddEmpateLay ?? '—'}</div>
+                                </div>
+                                <div>
+                                    <div class="text-gray-500 text-3xs mb-0.5">FORA</div>
+                                    <div class="text-emerald-400 font-black text-sm">${jogo.betfairOdds.oddForaBack ?? '—'}</div>
+                                    <div class="text-red-400/70 text-3xs">lay ${jogo.betfairOdds.oddForaLay ?? '—'}</div>
+                                </div>
+                            </div>
+                        </div>` : ''}
+
                         <div class="mt-2">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
                                 <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60">CASA: <strong class="text-amber-500">${jogo.momentum.ataquesCasa} AP</strong></span>
@@ -88,13 +211,13 @@
 
                         <div class="mt-2.5">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
-                                <span class="text-amber-500/90 font-semibold">${posseCasa}%</span>
+                                <span class="${posseCasa >= 60 ? 'text-red-400' : 'text-amber-500/90'} font-semibold">${posseCasa}%</span>
                                 <span class="font-bold tracking-wider text-gray-500 text-3xs">🔄 POSSE DE BOLA JOGO</span>
-                                <span class="text-gray-400 font-semibold text-right">${posseFora}%</span>
+                                <span class="${posseFora >= 60 ? 'text-red-400' : 'text-gray-400'} font-semibold text-right">${posseFora}%</span>
                             </div>
                             <div class="w-full bg-gray-950 rounded-full h-2 flex overflow-hidden border border-gray-800/50">
-                                <div class="bg-gradient-to-r from-amber-600 to-amber-500 h-full transition-all duration-500" style="width: ${posseCasa}%"></div>
-                                <div class="bg-gray-600 h-full transition-all duration-500" style="width: ${posseFora}%"></div>
+                                <div class="h-full transition-all duration-500 ${posseCasa >= 60 ? 'bg-red-500' : 'bg-gradient-to-r from-amber-600 to-amber-500'}" style="width: ${posseCasa}%"></div>
+                                <div class="h-full transition-all duration-500 ${posseFora >= 60 ? 'bg-red-500' : 'bg-gray-600'}" style="width: ${posseFora}%"></div>
                             </div>
                         </div>
 
@@ -110,12 +233,36 @@
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.momentum.chutesNoAlvoCasa}/${jogo.momentum.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.chutesNoAlvoFora}/${jogo.momentum.chutesParaForaFora}</span></div>
                             <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.momentum.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.escanteiosFora}</span></div>
                         </div>
+
+                        ${jogo.id ? `
+                        <div class="mt-2 rounded-xl overflow-hidden border border-gray-800/60 bg-gray-950/30">
+                            <div class="text-center font-bold text-gray-500 text-3xs tracking-wider py-1 border-b border-gray-900/50">📈 SOFASCORE — MOMENTUM</div>
+                            <img
+                                id="momentum-img-${jogo.id}"
+                                src="http://${VPS_IP}:3000/screenshot/${jogo.id}?t=${Date.now()}"
+                                onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
+                                onload="this.style.display='block';this.nextElementSibling.style.display='none';"
+                                onclick="abrirModal(this.src)"
+                                class="momentum-thumb"
+                                style="width:100%;display:block;min-height:80px;background:#030712;"
+                                alt="Momentum Chart"
+                            />
+                            <div style="display:none;" class="text-center text-gray-600 text-3xs font-mono py-4">⏳ Aguardando screenshot (~30s)...</div>
+                        </div>` : ''}
                     </div>
                 `;
                 gridJogos.innerHTML += cardHtml;
             });
         };
         eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
+
+        // Actualiza as imagens de momentum a cada 30s sem re-renderizar os cards
+        setInterval(() => {
+            document.querySelectorAll('[id^="momentum-img-"]').forEach(img => {
+                const jogoId = img.id.replace('momentum-img-', '');
+                img.src = `http://${VPS_IP}:3000/screenshot/${jogoId}?t=${Date.now()}`;
+            });
+        }, 30000);
     </script>
 </body>
 </html>

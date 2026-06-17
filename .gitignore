@@ -1,3 +1,5 @@
 telemetria*
 node_modules
 ./log/telemetria
+.idea
+historico_gatilhos*
