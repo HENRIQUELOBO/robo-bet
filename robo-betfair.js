@@ -140,27 +140,35 @@ async function iniciarRobo() {
             } catch (e) {
                 process.stderr.write(`[MOMENTUM] ❌ ${jogo.nomePartida}: ${e.message}\n`);
             }
-        }
-    }, 30000);
+            // Skip entries that are being closed by the main scanner to avoid races
+            if (jogo._encerrando) continue;
+         }
+     }, 30000);
 
     // Registra o callback para que o painel web possa adicionar jogos via POST /add-game
     logger.registrarCallbackAdicionarJogo(async (urlValida) => {
         const idJogo_unico = String(urlValida.split('/').pop() || Date.now());
-        if (poolDeJogos.has(idJogo_unico)) return;
-        const novaAba = await browser.newPage();
-        await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-        await novaAba.goto(urlValida, { waitUntil: 'domcontentloaded' });
-        poolDeJogos.set(idJogo_unico, {
-            pageContext: novaAba, nomePartida: 'Carregando...', id: idJogo_unico, tempo: 0, placar: '0-0', noIntervalo: false, sincronizadoComFeed: false, momentumResetado2T: false,
-            ultimoTempoRegistrado: 0, ciclosSemMudancaTempo: 0,
-            betfairMarketId: null, betfairOdds: null, betfairBuscado: false,
-            sofascoreMomentumImg: null, _ultimoScreenshotMomentum: 0,
-            ataquesPerigososCasa: 0, ataquesPerigososFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0, posseBolaCasa: 50, posseBolaFora: 50, pressao: 0.00, xgCasa: 0.00, xgFora: 0.00,
-            momentum: { ataquesCasa: 0, ataquesFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0 },
-            historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: []
-        });
-        alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
-    });
+        if (poolDeJogos.has(idJogo_unico)) return { ok: false, erro: 'Jogo já iniciado' };
+        try {
+            const novaAba = await browser.newPage();
+            await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+            await novaAba.goto(urlValida, { waitUntil: 'domcontentloaded' });
+            poolDeJogos.set(idJogo_unico, {
+                pageContext: novaAba, nomePartida: 'Carregando...', id: idJogo_unico, tempo: 0, placar: '0-0', noIntervalo: false, sincronizadoComFeed: false, momentumResetado2T: false,
+                ultimoTempoRegistrado: 0, ciclosSemMudancaTempo: 0,
+                betfairMarketId: null, betfairOdds: null, betfairBuscado: false,
+                sofascoreMomentumImg: null, _ultimoScreenshotMomentum: 0,
+                ataquesPerigososCasa: 0, ataquesPerigososFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0, posseBolaCasa: 50, posseBolaFora: 50, pressao: 0.00, xgCasa: 0.00, xgFora: 0.00,
+                momentum: { ataquesCasa: 0, ataquesFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0 },
+                historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: [],
+                _encerrando: false
+            });
+            alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
+            return { ok: true, id: idJogo_unico };
+        } catch (err) {
+            return { ok: false, erro: err && err.message ? err.message : 'Erro ao abrir nova aba' };
+        }
+     });
 
     // Loop Mestre assíncrono recursivo (A cada 5 segundos)
     setInterval(async () => {
@@ -283,6 +291,17 @@ async function iniciarRobo() {
                         }
                     }
 
+                    // --- Detecção robusta de 'Final da Partida' — procura pelo texto em toda a página
+                    // Alguns sites mostram a palavra "Final" fora do relógio; escaneamos o body para detectar imediatamente.
+                    try {
+                        const bodyText = (document.body && document.body.innerText) ? document.body.innerText.toLowerCase() : '';
+                        if (!statusEncerrado) {
+                            if (/\bfinal\s*(da|de)?\s*partida\b/.test(bodyText) || /\bfim\s*(da|do|de)?\s*jogo\b/.test(bodyText) || bodyText.includes('resultado final') || bodyText.includes('apito final')) {
+                                statusEncerrado = true;
+                            }
+                        }
+                    } catch (e) {}
+
                     let nósTexto = Array.from(document.querySelectorAll('div, span, p, b')).map(el => el.textContent ? el.textContent.trim() : '');
                     let matchPlacar = nósTexto.find(t => /^\d+\s*-\s*\d+$/.test(t));
                     if (matchPlacar) placarLocal = matchPlacar.replace(/\s+/g, '');
@@ -338,6 +357,8 @@ async function iniciarRobo() {
 
                     // 🛑 ROTINA DE EXCLUSÃO AUTOMÁTICA POR TÉRMINO DE PARTIDA (Garbage Collection)
                     if (r.statusEncerrado) {
+                        // Mark as closing so other loops (screenshot) skip this entry and avoid races
+                        jogo._encerrando = true;
                         try {
                             await jogo.pageContext.close(); // Destrói a aba do Chromium para aliviar CPU/RAM
                         } catch (e) {}
@@ -496,7 +517,8 @@ async function iniciarRobo() {
                     sofascoreMomentumImg: null, _ultimoScreenshotMomentum: 0,
                     ataquesPerigososCasa: 0, ataquesPerigososFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0, posseBolaCasa: 50, posseBolaFora: 50, pressao: 0.00, xgCasa: 0.00, xgFora: 0.00,
                     momentum: { ataquesCasa: 0, ataquesFora: 0, escanteiosCasa: 0, escanteiosFora: 0, chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0 },
-                    historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: []
+                    historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: [],
+                    _encerrando: false
                 });
                 alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
             } catch (err) {}
@@ -511,4 +533,5 @@ async function iniciarRobo() {
 }
 
 iniciarRobo().catch(err => console.error(err));
+
 

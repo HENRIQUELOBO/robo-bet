@@ -2,7 +2,7 @@ const puppeteer = require('puppeteer');
 
 async function rodarMinerador() {
     console.log('[Scout] Iniciando Robô Sentinela...');
-    const browser = await puppeteer.launch({ headless: false, args: ['--no-sandbox'] });
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
     const page = await browser.newPage();
     const processados = new Set();
 
@@ -16,6 +16,8 @@ async function rodarMinerador() {
         const liveBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText?.toUpperCase().includes('AO VIVO'));
         if (liveBtn) liveBtn.click();
     });
+
+    await new Promise(r => setTimeout(r, 5000));
 
     // 2. LOOP DE MONITORAMENTO (Sem recarregar)
     while (true) {

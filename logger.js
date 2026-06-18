@@ -14,14 +14,20 @@ let _callbackAdicionarJogo = null;
 // Mapa de screenshots momentum: { [jogoId]: base64String }
 const _screenshotsMomentum = new Map();
 
+// Shared mutable holder so httpServer can call the callback even if it's registered later
+const _sharedCallback = { fn: null };
+
 function registrarCallbackAdicionarJogo(fn) {
     _callbackAdicionarJogo = fn;
+    _sharedCallback.fn = fn;
 }
 
+// Passa uma função getter para que o servidor HTTP possa obter sempre
+// o estado mais recente de `dadosUltimosJogos` mesmo após reloads do front-end.
 serverHttp({
     clientesSSE,
-    dadosUltimosJogos,
-    _callbackAdicionarJogo,
+    getDadosUltimosJogos: () => dadosUltimosJogos,
+    _callbackAdicionarJogo: _sharedCallback,
     _screenshotsMomentum
 });
 
