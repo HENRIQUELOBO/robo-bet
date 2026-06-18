@@ -48,6 +48,12 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             ataquesCasa: 0, ataquesFora: 0, escanteiosCasa: 0, escanteiosFora: 0,
             chutesNoAlvoCasa: 0, chutesNoAlvoFora: 0, chutesParaForaCasa: 0, chutesParaForaFora: 0
         };
+
+        // Limpa todos os alertas disparados no primeiro tempo para o reinício no segundo tempo
+        if (alertas) {
+            Object.keys(alertas).forEach(k => { alertas[k] = false; });
+        }
+
         jogo.momentumResetado2T = true;
     }
     if (!jogo.noIntervalo && minAtual > 45 && jogo.momentumResetado2T) jogo.momentumResetado2T = false;
@@ -57,14 +63,20 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
     const apmFora = calcularPressaoAPM(jogo.historicoAtqFora, minAtual);
     jogo.pressao  = apmCasa + apmFora;
 
-    jogo.momentum.ataquesCasa        = calcularMomentumMicro10(jogo.historicoAtqCasa, minAtual);
-    jogo.momentum.ataquesFora        = calcularMomentumMicro10(jogo.historicoAtqFora, minAtual);
-    jogo.momentum.escanteiosCasa     = calcularMomentumMicro10(jogo.historicoEscCasa, minAtual);
-    jogo.momentum.escanteiosFora     = calcularMomentumMicro10(jogo.historicoEscFora, minAtual);
-    jogo.momentum.chutesNoAlvoCasa   = calcularMomentumMicro10(jogo.historicoChAlvoCasa, minAtual);
-    jogo.momentum.chutesNoAlvoFora   = calcularMomentumMicro10(jogo.historicoChAlvoFora, minAtual);
-    jogo.momentum.chutesParaForaCasa = calcularMomentumMicro10(jogo.historicoChForaCasa, minAtual);
-    jogo.momentum.chutesParaForaFora = calcularMomentumMicro10(jogo.historicoChForaFora, minAtual);
+    const mapeamentoMomentum = {
+        ataquesCasa: jogo.historicoAtqCasa,
+        ataquesFora: jogo.historicoAtqFora,
+        escanteiosCasa: jogo.historicoEscCasa,
+        escanteiosFora: jogo.historicoEscFora,
+        chutesNoAlvoCasa: jogo.historicoChAlvoCasa,
+        chutesNoAlvoFora: jogo.historicoChAlvoFora,
+        chutesParaForaCasa: jogo.historicoChForaCasa,
+        chutesParaForaFora: jogo.historicoChForaFora
+    };
+
+    for (const [key, historico] of Object.entries(mapeamentoMomentum)) {
+        jogo.momentum[key] = calcularMomentumMicro10(historico, minAtual);
+    }
 
     const pesoChAlvo = 0.35; const pesoChFora = 0.15;
     const pesoEsc = 0.08;    const pesoAtq = 0.02;

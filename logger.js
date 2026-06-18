@@ -2,8 +2,9 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const http = require('http');
 const config = require('./config');
+const {_formatarDataHora, _sanitizarNomeJogo} = require('./util');
+const serverHttp = require('./httpServer');
 
 const CAMINHO_LOG_CSV = path.join(__dirname, 'historico_gatilhos.csv');
 
@@ -17,85 +18,12 @@ function registrarCallbackAdicionarJogo(fn) {
     _callbackAdicionarJogo = fn;
 }
 
-const server = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
-
-    if (req.url === '/events' && req.method === 'GET') {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-        clientesSSE.push(res);
-        res.write(`data: ${JSON.stringify(dadosUltimosJogos)}\n\n`);
-        req.on('close', () => { clientesSSE = clientesSSE.filter(client => client !== res); });
-
-    } else if (req.url.startsWith('/screenshot/') && req.method === 'GET') {
-        // Serve a imagem do gráfico momentum como JPEG binário
-        const jogoId = req.url.split('/screenshot/')[1]?.split('?')[0];
-        const imgBase64 = jogoId ? _screenshotsMomentum.get(jogoId) : null;
-        if (imgBase64) {
-            const buffer = Buffer.from(imgBase64.replace('data:image/jpeg;base64,', ''), 'base64');
-            res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
-            res.end(buffer);
-        } else {
-            res.writeHead(204); res.end(); // No Content — ainda sem screenshot
-        }
-
-    } else if (req.url === '/add-game' && req.method === 'POST') {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', async () => {
-            try {
-                const { url } = JSON.parse(body);
-                if (!url || !url.startsWith('http')) {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, erro: 'URL inválida' }));
-                    return;
-                }
-                if (_callbackAdicionarJogo) {
-                    await _callbackAdicionarJogo(url);
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: true }));
-                } else {
-                    res.writeHead(503, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ ok: false, erro: 'Engine ainda não pronta' }));
-                }
-            } catch (e) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ ok: false, erro: e.message }));
-            }
-        });
-
-    } else {
-        res.writeHead(404); res.end();
-    }
+serverHttp({
+    clientesSSE,
+    dadosUltimosJogos,
+    _callbackAdicionarJogo,
+    _screenshotsMomentum
 });
-
-server.listen(3000, '0.0.0.0', () => {});
-
-function _formatarDataHora() {
-    const d = new Date();
-    const dd  = String(d.getDate()).padStart(2, '0');
-    const mm  = String(d.getMonth() + 1).padStart(2, '0');
-    const yyyy = d.getFullYear();
-    const hh  = String(d.getHours()).padStart(2, '0');
-    const mi  = String(d.getMinutes()).padStart(2, '0');
-    const ss  = String(d.getSeconds()).padStart(2, '0');
-    return {
-        data: `${dd}-${mm}-${yyyy}`,
-        hora: `${hh}:${mi}:${ss}`
-    };
-}
-
-function _sanitizarNomeJogo(nome) {
-    // Normaliza acentos (Ö→O, ö→o, é→e, etc.) antes de remover caracteres especiais
-    return nome
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/\s+/g, '_')
-        .replace(/[^a-zA-Z0-9_]/g, '')
-        || 'jogo_sem_nome';
-}
 
 function registrarTelemetriaContinua(jogo) {
     if (!jogo) return;
@@ -119,25 +47,39 @@ function registrarTelemetriaContinua(jogo) {
     }
 }
 
+const GATILHO_STATUS_MAP = {
+    golIminente2T: "🚨 GATILHO 2T!",
+    golIminente2TFora: "🚨 GATILHO 2T FORA",
+    favoritoVira: "🔄 FAVORITO VIRA",
+    favoritoVence: "💰 FAVORITO VENCE",
+    golIminente1T: "🔥 GATILHO 1T!",
+    golIminente1TFora: "🔥 GATILHO 1T FORA",
+    layDraw: "🏆 LAY DRAW",
+    lay11: "🎯 LAY 1x1",
+    lay01: "⚡ LAY 0x1",
+    lay10: "⚡ LAY 1x0",
+    lay12: "⚡ LAY 1x2",
+    lay21: "⚡ LAY 2x1",
+    lay00: "🔵 LAY 0x0",
+};
+
 function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
     const listaJogos = [];
     for (let [id, jogo] of poolDeJogos.entries()) {
         const alertas = alertasDisparadosPorJogo.get(id);
         let statusGatilho = "Escaneando...";
-        if (jogo.noIntervalo) statusGatilho = "INTERVALO";
-        else if (alertas?.golIminente2T)      statusGatilho = "🚨 GATILHO 2T!";
-        else if (alertas?.golIminente2TFora)  statusGatilho = "🚨 GATILHO 2T FORA";
-        else if (alertas?.favoritoVira)       statusGatilho = "🔄 FAVORITO VIRA";
-        else if (alertas?.favoritoVence)      statusGatilho = "💰 FAVORITO VENCE";
-        else if (alertas?.golIminente1T)      statusGatilho = "🔥 GATILHO 1T!";
-        else if (alertas?.golIminente1TFora)  statusGatilho = "🔥 GATILHO 1T FORA";
-        else if (alertas?.layDraw)            statusGatilho = "🏆 LAY DRAW";
-        else if (alertas?.lay11)              statusGatilho = "🎯 LAY 1x1";
-        else if (alertas?.lay01)              statusGatilho = "⚡ LAY 0x1";
-        else if (alertas?.lay10)              statusGatilho = "⚡ LAY 1x0";
-        else if (alertas?.lay12)              statusGatilho = "⚡ LAY 1x2";
-        else if (alertas?.lay21)              statusGatilho = "⚡ LAY 2x1";
-        else if (alertas?.lay00)              statusGatilho = "🔵 LAY 0x0";
+
+        if (jogo.noIntervalo) {
+            statusGatilho = "INTERVALO";
+        } else if (alertas) {
+            // Itera sobre o mapa de status para encontrar o primeiro gatilho ativo
+            for (const key in GATILHO_STATUS_MAP) {
+                if (alertas[key]) {
+                    statusGatilho = GATILHO_STATUS_MAP[key];
+                    break; // Encontrou o primeiro, pode sair
+                }
+            }
+        }
 
         listaJogos.push({
             id,
