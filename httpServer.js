@@ -171,41 +171,74 @@ module.exports = (props) => {
         }
 
         // Apply confirmations to CSV (backup original first)
-        if (req.url === '/api/historico/apply' && req.method === 'POST') {
-            try {
-                const csvPath = path.join(__dirname, 'historico_gatilhos.csv');
-                const cnfPath = path.join(__dirname, 'historico_confirmacoes.json');
-                if (!fs.existsSync(csvPath)) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok:false, erro:'CSV não encontrado' })); }
-                const cnf = (fs.existsSync(cnfPath) ? JSON.parse(fs.readFileSync(cnfPath, 'utf8')||'{}') : {});
-                if (!cnf || Object.keys(cnf).length===0) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok:true, applied:0 })); }
-                // backup
-                const bk = csvPath + '.bak.' + Date.now();
-                fs.copyFileSync(csvPath, bk);
-                const txt = fs.readFileSync(csvPath, 'utf8');
-                const lines = txt.split(/\r?\n/);
-                let applied = 0;
-                for (const k of Object.keys(cnf)) {
-                    const id = parseInt(k,10);
-                    if (!isFinite(id) || id < 1 || id > lines.length) continue;
-                    if (!lines[id-1] || lines[id-1].trim()==='') continue;
-                    const cols = lines[id-1].split(';').map(c=>c);
-                    let replaced = false;
-                    for (let i = cols.length-1; i>=0; i--) {
-                        if (cols[i] && cols[i].trim() !== '') { cols[i] = String(cnf[k].resultado || ''); replaced = true; break; }
+        if (req.url.startsWith('/api/historico/apply') && req.method === 'POST') {
+            // Support optional body { ids: [1,2,3] } or query ?id=123 to apply only specific confirmations.
+            let body = '';
+            req.on('data', c => body += c);
+            req.on('end', () => {
+                try {
+                    const csvPath = path.join(__dirname, 'historico_gatilhos.csv');
+                    const cnfPath = path.join(__dirname, 'historico_confirmacoes.json');
+                    if (!fs.existsSync(csvPath)) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok:false, erro:'CSV não encontrado' })); }
+                    const cnf = (fs.existsSync(cnfPath) ? JSON.parse(fs.readFileSync(cnfPath, 'utf8')||'{}') : {});
+
+                    // parse body to extract ids
+                    let idsToApply = null;
+                    try {
+                        const payload = body ? JSON.parse(body) : {};
+                        if (Array.isArray(payload.ids)) idsToApply = payload.ids.map(x => parseInt(x,10)).filter(n => isFinite(n));
+                    } catch(e) { idsToApply = null; }
+                    // also allow query ?id=123
+                    try {
+                        const qp = req.url.split('?')[1] || '';
+                        const parts = qp.split('&').map(p => p.split('='));
+                        for (const p of parts) if (p[0]==='id' && p[1]) { const n = parseInt(p[1],10); if (isFinite(n)) { idsToApply = idsToApply || []; idsToApply.push(n); } }
+                    } catch(e) {}
+
+                    if (!cnf || Object.keys(cnf).length===0) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok:true, applied:0 })); }
+
+                    // if idsToApply is null -> apply all
+                    const applyAll = !Array.isArray(idsToApply) || idsToApply.length===0;
+
+                    // backup
+                    const bk = csvPath + '.bak.' + Date.now();
+                    fs.copyFileSync(csvPath, bk);
+                    const txt = fs.readFileSync(csvPath, 'utf8');
+                    const lines = txt.split(/\r?\n/);
+                    let applied = 0;
+
+                    for (const k of Object.keys(cnf)) {
+                        const id = parseInt(k,10);
+                        if (!isFinite(id) || id < 1 || id > lines.length) continue;
+                        if (!applyAll && !idsToApply.includes(id)) continue;
+                        if (!lines[id-1] || lines[id-1].trim()==='') continue;
+                        const cols = lines[id-1].split(';').map(c=>c);
+                        let replaced = false;
+                        for (let i = cols.length-1; i>=0; i--) {
+                            if (cols[i] && cols[i].trim() !== '') { cols[i] = String(cnf[k].resultado || ''); replaced = true; break; }
+                        }
+                        if (!replaced) cols.push(String(cnf[k].resultado || ''));
+                        lines[id-1] = cols.join(';');
+                        applied++;
+                        // remove applied confirmation from cnf
+                        delete cnf[String(id)];
                     }
-                    if (!replaced) cols.push(String(cnf[k].resultado || ''));
-                    lines[id-1] = cols.join(';');
-                    applied++;
+
+                    fs.writeFileSync(csvPath, lines.join('\n'), 'utf8');
+                    // save remaining confirmations (or remove file if empty)
+                    if (Object.keys(cnf).length === 0) {
+                        try { fs.unlinkSync(cnfPath); } catch(e) {}
+                    } else {
+                        fs.writeFileSync(cnfPath, JSON.stringify(cnf, null, 2), 'utf8');
+                    }
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    return res.end(JSON.stringify({ ok:true, applied }));
+                } catch (e) {
+                    res.writeHead(500, { 'Content-Type': 'application/json' });
+                    return res.end(JSON.stringify({ ok:false, erro: e.message }));
                 }
-                fs.writeFileSync(csvPath, lines.join('\n'), 'utf8');
-                // clear confirmations
-                fs.unlinkSync(cnfPath);
-                res.writeHead(200, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ ok:true, applied }));
-            } catch (e) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                return res.end(JSON.stringify({ ok:false, erro: e.message }));
-            }
+            });
+            return;
         }
 
         if (req.url === '/add-game' && req.method === 'POST') {

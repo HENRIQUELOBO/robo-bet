@@ -33,6 +33,7 @@
     <div id="totais" class="totais"></div>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
       <input id="filtro" placeholder="filtro por partida/tipo" style="padding:6px;border-radius:6px;border:1px solid #123;background:#04101a;color:#e6eef8" />
+      <button id="btn-order" class="btn" title="Ordenar por acerto">Acerto ↑</button>
       <button id="btn-apply" class="btn" style="background:#0b3b5a;color:#fff">Aplicar confirmações</button>
     </div>
   </div>
@@ -43,16 +44,24 @@
   </div>
 
 <script>
+let totalsOrderAsc = true; // true => ascending by pct
 async function carregar(){
   const r = await fetch('/api/historico');
   const j = await r.json();
   if(!j.ok){ alert('Erro: '+(j.erro||'')) ; return; }
-  const totals = j.totals;
+  const totals = j.totals || {};
   const totEl = document.getElementById('totais'); totEl.innerHTML='';
-  for(const tipo of Object.keys(totals||{})){
-    const t = totals[tipo];
+  // build array with pct and sort by pct ascending
+  const tipos = Object.keys(totals).map(tipo => {
+    const t = totals[tipo] || { total:0, GREEN:0, RED:0 };
+    const pct = t.total > 0 ? Math.round((t.GREEN / t.total) * 1000) / 10 : 0;
+    return { tipo, t, pct };
+  }).sort((a,b) => (totalsOrderAsc ? (a.pct - b.pct) : (b.pct - a.pct)));
+  for (const entry of tipos) {
+    const tipo = entry.tipo;
+    const t = entry.t;
+    const pct = entry.pct;
     const div = document.createElement('div'); div.className='card';
-    const pct = t.total > 0 ? Math.round((t.GREEN / t.total) * 1000) / 10 : 0; // one decimal
     div.innerHTML = `
       <div style="font-size:12px;opacity:.9">${tipo||'(unknown)'}</div>
       <div style="font-weight:800;font-size:18px">${t.total}</div>
@@ -113,6 +122,22 @@ async function carregar(){
         cell.appendChild(cancel);
       };
       cell.appendChild(edit);
+      // if there's a pending confirmation for this row, show a small per-row "Confirme" button to apply it immediately
+      if (pending) {
+        const btnC = document.createElement('button'); btnC.className = 'btn'; btnC.textContent = 'Confirme'; btnC.style.marginLeft = '8px';
+        btnC.onclick = async ()=>{
+          if (!confirm(`Aplicar confirmação da linha ${row.id} ao CSV?`)) return;
+          try {
+            btnC.disabled = true;
+            const r2 = await fetch('/api/historico/apply', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ids: [row.id] }) });
+            const j2 = await r2.json();
+            if (!j2.ok) { alert('Erro: '+(j2.erro||'')); btnC.disabled = false; return; }
+            alert('Aplicadas: '+j2.applied+' linhas. Backup criado.');
+            carregar();
+          } catch(e) { alert('Falha: '+e.message); btnC.disabled = false; }
+        };
+        cell.appendChild(btnC);
+      }
     } else {
       cell.appendChild(btnG); cell.appendChild(document.createTextNode(' ')); cell.appendChild(btnR);
     }
@@ -154,6 +179,14 @@ document.getElementById('btn-apply').addEventListener('click', async ()=>{
 
 document.getElementById('filtro').addEventListener('input', ()=>{ scheduleCarregar(); });
 let _carregarTimer = null; function scheduleCarregar(){ if(_carregarTimer) clearTimeout(_carregarTimer); _carregarTimer = setTimeout(()=>{ carregar(); }, 250); }
+
+// toggle ordering button
+document.getElementById('btn-order').addEventListener('click', ()=>{
+  totalsOrderAsc = !totalsOrderAsc;
+  const b = document.getElementById('btn-order');
+  b.textContent = totalsOrderAsc ? 'Acerto ↑' : 'Acerto ↓';
+  carregar();
+});
 
 carregar();
 </script>
