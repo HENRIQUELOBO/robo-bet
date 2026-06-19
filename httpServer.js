@@ -99,6 +99,11 @@ module.exports = (props) => {
                     // normalize: last non-empty token from CSV is original result if exists
                     let resultado = '';
                     for (let i = cols.length-1; i >= 0; i--) { if (cols[i]) { resultado = cols[i]; break; } }
+                    // If the last token is an internal signal id (ex: sig_12345...), hide it from the "resultado"
+                    // and present a human-friendly status instead (Portuguese: 'PENDENTE').
+                    if (typeof resultado === 'string' && resultado.startsWith('sig_')) {
+                        resultado = 'PENDENTE';
+                    }
 
                     // if there is a pending confirmation for this row id, override the resultado for display/totals
                     const id = idx + 1;

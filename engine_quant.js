@@ -43,8 +43,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
     const analyzer = createAnalyzer();
     // Anexa a referência do objeto de análise ao jogo desde já (é o mesmo objeto mutável)
     try { jogo._engineAnalysis = analyzer.get(); } catch (e) { /* non-fatal */ }
-    // debug: confirmar que a função está a ser executada para este jogo
-    try { console.log(`[ENGINE] processarMotorDeRegras id=${idJogo} tempo=${minAtual} nome="${jogo.nomePartida || ''}"`); } catch(e){}
+    // engine entry - no debug logging (kept silent)
     // 🔬 TRAVA ANTI-FANTASMA DO INTERVALO
     if (jogo.noIntervalo && !jogo.momentumResetado2T) {
         jogo.historicoAtqCasa = []; jogo.historicoAtqFora = [];
@@ -140,6 +139,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 jogo.momentum.ataquesCasa >= 10 && jogo.momentum.chutesNoAlvoCasa >= 2 &&
                 acCasa >= 0 && qualCasa >= 0.15) {
                 alertas.golIminente1T = true;
+                analyzer.setMet('GATILHO_1T');
                 const ctx = difGols < 0 ? '🔴 Casa a perder' : difGols === 0 ? '🟡 Empate' : '🟢 Casa +1';
                 const posse = jogo.posseBolaCasa ? ` | Posse Casa: ${jogo.posseBolaCasa}%` : '';
                 const msg = `🔥 *WOLF QUANT - GATILHO 1T CASA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx}${posse}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa > 0 ? '+' : ''}${acCasa} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Chutes Alvo: ${jogo.momentum.chutesNoAlvoCasa} | Qualidade: ${(qualCasa*100).toFixed(0)}%`;
@@ -147,13 +147,15 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             }
         }
         analyzer.init('GATILHO_1T');
-        if (emCooldown) analyzer.addMissing('GATILHO_1T', 'emCooldown');
-        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T', 'janelaTempo');
-        if (difGols > 1) analyzer.addMissing('GATILHO_1T', 'difGols>1');
-        if (jogo.momentum.ataquesCasa < 10) analyzer.addMissing('GATILHO_1T', 'ataquesCasa<10');
-        if (jogo.momentum.chutesNoAlvoCasa < 2) analyzer.addMissing('GATILHO_1T', 'chutesNoAlvoCasa<2');
-        if (acCasa < 0) analyzer.addMissing('GATILHO_1T', 'aceleracaoNegativa');
-        if (qualCasa < 0.15) analyzer.addMissing('GATILHO_1T', 'qualidadeBaixa');
+        // mark why the gatilho is missing, include current values for better diagnostics
+        if (emCooldown) analyzer.addMissing('GATILHO_1T', 'emCooldown', minAtual);
+        // padrão: marcar janelaTempo com o tempo atual formatado quando fora da janela (formato esperado pelo painel)
+        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T', 'janelaTempo', `${minAtual}'`);
+        if (difGols > 1) analyzer.addMissing('GATILHO_1T', 'difGols>1', difGols);
+        if (jogo.momentum.ataquesCasa < 10) analyzer.addMissing('GATILHO_1T', 'ataquesCasa<10', jogo.momentum.ataquesCasa);
+        if (jogo.momentum.chutesNoAlvoCasa < 2) analyzer.addMissing('GATILHO_1T', 'chutesNoAlvoCasa<2', jogo.momentum.chutesNoAlvoCasa);
+        if (acCasa < 0) analyzer.addMissing('GATILHO_1T', 'aceleracaoNegativa', acCasa);
+        if (qualCasa < 0.15) analyzer.addMissing('GATILHO_1T', 'qualidadeBaixa', Math.round(qualCasa*100));
         if (!emCooldown && minAtual >= 15 && minAtual <= 40 && !alertas.golIminente1T && analyzer.get()['GATILHO_1T'].missing.length === 0) {
             alertas.golIminente1T = true;
             analyzer.setMet('GATILHO_1T');
@@ -173,6 +175,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 jogo.momentum.ataquesFora >= 10 && jogo.momentum.chutesNoAlvoFora >= 2 &&
                 acFora >= 0 && qualFora >= 0.15) {
                 alertas.golIminente1TFora = true;
+                analyzer.setMet('GATILHO_1T_FORA');
                 const ctx = difGols > 0 ? '🔴 Fora a perder' : difGols === 0 ? '🟡 Empate' : '🟢 Fora +1';
                 const posse = jogo.posseBolaFora ? ` | Posse Fora: ${jogo.posseBolaFora}%` : '';
                 const msg = `🔥 *WOLF QUANT - GATILHO 1T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx}${posse}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Chutes Alvo: ${jogo.momentum.chutesNoAlvoFora} | Qualidade: ${(qualFora*100).toFixed(0)}%`;
@@ -180,17 +183,19 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             }
         }
         analyzer.init('GATILHO_1T_FORA');
-        if (emCooldown) analyzer.addMissing('GATILHO_1T_FORA', 'emCooldown');
-        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T_FORA', 'janelaTempo');
-        if (difGols < -1 || difGols > 3) analyzer.addMissing('GATILHO_1T_FORA', 'difGolsFora');
-        if (jogo.momentum.ataquesFora < 10) analyzer.addMissing('GATILHO_1T_FORA', 'ataquesFora<10');
-        if (jogo.momentum.chutesNoAlvoFora < 2) analyzer.addMissing('GATILHO_1T_FORA', 'chutesNoAlvoFora<2');
-        if (acFora < 0) analyzer.addMissing('GATILHO_1T_FORA', 'aceleracaoNegativa');
-        if (qualFora < 0.15) analyzer.addMissing('GATILHO_1T_FORA', 'qualidadeBaixa');
+        // diagnostics with current values
+        if (emCooldown) analyzer.addMissing('GATILHO_1T_FORA', 'emCooldown', minAtual);
+        // padrão: marcar janelaTempo com o tempo atual formatado quando fora da janela (formato esperado pelo painel)
+        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T_FORA', 'janelaTempo', `${minAtual}'`);
+        if (difGols < -1 || difGols > 3) analyzer.addMissing('GATILHO_1T_FORA', 'difGolsFora', difGols);
+        if (jogo.momentum.ataquesFora < 10) analyzer.addMissing('GATILHO_1T_FORA', 'ataquesFora<10', jogo.momentum.ataquesFora);
+        if (jogo.momentum.chutesNoAlvoFora < 2) analyzer.addMissing('GATILHO_1T_FORA', 'chutesNoAlvoFora<2', jogo.momentum.chutesNoAlvoFora);
+        if (acFora < 0) analyzer.addMissing('GATILHO_1T_FORA', 'aceleracaoNegativa', acFora);
+        if (qualFora < 0.15) analyzer.addMissing('GATILHO_1T_FORA', 'qualidadeBaixa', Math.round(qualFora*100));
         if (!emCooldown && minAtual >= 15 && minAtual <= 40 && !alertas.golIminente1TFora && analyzer.get()['GATILHO_1T_FORA'].missing.length === 0) {
             alertas.golIminente1TFora = true;
             analyzer.setMet('GATILHO_1T_FORA');
-            const ctx = difGols > 0 ? '🔴 Fora a perder' : difGols === 0 ? '🟡 Empate' : '🟢 Fora +1';
+            const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
             const posse = jogo.posseBolaFora ? ` | Posse Fora: ${jogo.posseBolaFora}%` : '';
             const msg = `🔥 *WOLF QUANT - GATILHO 1T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx}${posse}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Chutes Alvo: ${jogo.momentum.chutesNoAlvoFora} | Qualidade: ${(qualFora*100).toFixed(0)}%`;
             require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_1T_FORA");
@@ -201,16 +206,39 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // MÉTODO 3 — GATILHO 2T CASA: Casa pressiona no 2ºT (58'–85')
         // Score: casa a perder ou empate (sem valor se já a ganhar)
         // ─────────────────────────────────────────────────────────────────
-        if (!emCooldown && minAtual >= 58 && minAtual <= 85 && !alertas.golIminente2T) {
-            if (difGols <= 0 &&
-                jogo.momentum.ataquesCasa >= 12 &&
-                (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= 3 &&
-                acCasa >= 0 && qualCasa >= 0.18) {
+        analyzer.init('GATILHO_2T');
+        // NOTE: broadened 2T window to start at 46' so second-half early minutes are considered
+        if (!emCooldown && minAtual >= 46 && minAtual <= 85 && !alertas.golIminente2T) {
+            // compute booleans for debug/traceability
+            const okWindow = (minAtual >= 46 && minAtual <= 85);
+            const okDif = difGols <= 0;
+            const okAtaques = jogo.momentum.ataquesCasa >= 12;
+            const okChEsc = (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= 3;
+            const okAcel = acCasa >= 0;
+            const okQual = qualCasa >= 0.18;
+            // (removed verbose debug logging)
+            if (okDif && okAtaques && okChEsc && okAcel && okQual) {
                 alertas.golIminente2T = true;
+                analyzer.setMet('GATILHO_2T');
                 const ctx = difGols < 0 ? '🔴 Casa a perder' : '🟡 Empate';
                 const msg = `🚨 *WOLF QUANT - GATILHO 2T*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa > 0 ? '+' : ''}${acCasa}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa}`;
                 require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T");
             }
+        }
+        // marca motivos pelos quais o gatilho ficou 'faltando' (mesma abordagem do 1T)
+        if (emCooldown) analyzer.addMissing('GATILHO_2T', 'emCooldown', minAtual);
+        if (minAtual < 46 || minAtual > 85) analyzer.addMissing('GATILHO_2T', 'janelaTempo', `${minAtual}'`);
+        if (difGols > 0) analyzer.addMissing('GATILHO_2T', 'difGols>0', difGols);
+        if (jogo.momentum.ataquesCasa < 12) analyzer.addMissing('GATILHO_2T', 'ataquesCasa<12', jogo.momentum.ataquesCasa);
+        if ((jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) < 3) analyzer.addMissing('GATILHO_2T', 'chutesNoAlvoCasa+escanteios<3', (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa));
+        if (acCasa < 0) analyzer.addMissing('GATILHO_2T', 'aceleracaoNegativa', acCasa);
+        if (qualCasa < 0.18) analyzer.addMissing('GATILHO_2T', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualCasa*100));
+        if (!emCooldown && minAtual >= 46 && minAtual <= 85 && !alertas.golIminente2T && analyzer.get()['GATILHO_2T'].missing.length === 0) {
+            alertas.golIminente2T = true;
+            analyzer.setMet('GATILHO_2T');
+            const ctx = difGols < 0 ? '🔴 Casa a perder' : '🟡 Empate';
+            const msg = `🚨 *WOLF QUANT - GATILHO 2T*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa > 0 ? '+' : ''}${acCasa}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa}`;
+            require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T");
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -218,16 +246,33 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // ✅ NOVO: Sistema era cego à equipa visitante — corrigido
         // Score: fora a perder ou empate
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('GATILHO_2T_FORA');
         if (!emCooldown && minAtual >= 58 && minAtual <= 85 && !alertas.golIminente2TFora) {
             if (difGols >= 0 &&   // fora a perder (difGols>0) ou empate (=0)
                 jogo.momentum.ataquesFora >= 12 &&
                 (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) >= 3 &&
                 acFora >= 0 && qualFora >= 0.18) {
                 alertas.golIminente2TFora = true;
+                analyzer.setMet('GATILHO_2T_FORA');
                 const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
                 const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
                 require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T_FORA");
             }
+        }
+        // marcar motivos de 'missing' para GATILHO_2T_FORA
+        if (emCooldown) analyzer.addMissing('GATILHO_2T_FORA', 'emCooldown', minAtual);
+        if (minAtual < 58 || minAtual > 85) analyzer.addMissing('GATILHO_2T_FORA', 'janelaTempo', `${minAtual}'`);
+        if (difGols < 0) analyzer.addMissing('GATILHO_2T_FORA', 'difGols<0', difGols);
+        if (jogo.momentum.ataquesFora < 12) analyzer.addMissing('GATILHO_2T_FORA', 'ataquesFora<12', jogo.momentum.ataquesFora);
+        if ((jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) < 3) analyzer.addMissing('GATILHO_2T_FORA', 'chutesNoAlvoFora+escanteios<3', (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora));
+        if (acFora < 0) analyzer.addMissing('GATILHO_2T_FORA', 'aceleracaoNegativa', acFora);
+        if (qualFora < 0.18) analyzer.addMissing('GATILHO_2T_FORA', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualFora*100));
+        if (!emCooldown && minAtual >= 58 && minAtual <= 85 && !alertas.golIminente2TFora && analyzer.get()['GATILHO_2T_FORA'].missing.length === 0) {
+            alertas.golIminente2TFora = true;
+            analyzer.setMet('GATILHO_2T_FORA');
+            const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
+            const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
+            require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T_FORA");
         }
 
 
@@ -240,6 +285,23 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // Condição: dominância ≥ 2.0x + posse confirma + qualidade real
         // Janela: 25'–78' (antes disso a odd do draw é muito alta; depois cai)
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_DRAW');
+        analyzer.addExpected('LAY_DRAW', "janelaTempo - Janela 25'-78'", minAtual);
+        if (minAtual < 25 || minAtual > 78) analyzer.addMissing('LAY_DRAW', "janelaTempo - Janela 25'-78'", `${minAtual}'`);
+        analyzer.addExpected('LAY_DRAW', 'empate - Placar deve ser empate', jogo.placar || 'N/D');
+        if (!(gC === gF)) analyzer.addMissing('LAY_DRAW', 'empate - Placar deve ser empate', jogo.placar || 'N/D');
+        const ratioLayDraw = (apmCasa > 0 && apmFora > 0) ? Math.max(apmCasa, apmFora) / Math.min(apmCasa, apmFora) : 0;
+        analyzer.addExpected('LAY_DRAW', 'dominancia<2.0 - Dominância ≥ 2.0x', ratioLayDraw);
+        if (ratioLayDraw < 2.0) analyzer.addMissing('LAY_DRAW', 'dominancia<2.0 - Dominância ≥ 2.0x', ratioLayDraw);
+        const apmDominanteLayDraw = apmCasa >= apmFora ? apmCasa : apmFora;
+        analyzer.addExpected('LAY_DRAW', 'apmDominante<0.8 - APM da equipa dominante ≥ 0.8', apmDominanteLayDraw);
+        if (apmDominanteLayDraw < 0.8) analyzer.addMissing('LAY_DRAW', 'apmDominante<0.8 - APM da equipa dominante ≥ 0.8', apmDominanteLayDraw);
+        const atqDominanteLayDraw = apmCasa >= apmFora ? jogo.momentum.ataquesCasa : jogo.momentum.ataquesFora;
+        analyzer.addExpected('LAY_DRAW', 'atqDominante<8 - Ataques da equipa dominante ≥ 8', atqDominanteLayDraw);
+        if (atqDominanteLayDraw < 8) analyzer.addMissing('LAY_DRAW', 'atqDominante<8 - Ataques da equipa dominante ≥ 8', atqDominanteLayDraw);
+        const qualDominanteLayDraw = apmCasa >= apmFora ? qualCasa : qualFora;
+        analyzer.addExpected('LAY_DRAW', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualDominanteLayDraw*100));
+        if (qualDominanteLayDraw < 0.18) analyzer.addMissing('LAY_DRAW', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualDominanteLayDraw*100));
         if (!emCooldown && !alertas.layDraw && minAtual >= 25 && minAtual <= 78) {
             const ehEmpate = (gC === gF);
             if (ehEmpate) {
@@ -252,9 +314,10 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 const posseDominante  = apmCasa >= apmFora ? (jogo.posseBolaCasa || 50) : (jogo.posseBolaFora || 50);
                 // Posse ≥ 55% é confirmatório mas não obrigatório (pode ser 0 se não scraped)
                 const posseConfirma   = posseDominante >= 55 || posseDominante === 50; // 50 = default (sem dado)
-                if (ratio >= 2.0 && apmDominante >= 0.8 && atqDominante >= 8 &&
+                    if (ratio >= 2.0 && apmDominante >= 0.8 && atqDominante >= 8 &&
                     qualDominante >= 0.18 && posseConfirma) {
                     alertas.layDraw = true;
+                        analyzer.setMet('LAY_DRAW');
                     const posseLabel = posseDominante !== 50 ? ` | Posse ${equipaDominante}: ${posseDominante}%` : '';
                     const msg = `🏆 *WOLF QUANT - LAY THE DRAW*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | Score: ${jogo.placar} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM ${equipaDominante}: ${apmDominante.toFixed(2)} | Dominância: ${ratio.toFixed(1)}x${posseLabel}\n🔬 AtqP: ${atqDominante} | Qualidade: ${(qualDominante*100).toFixed(0)}%\n💡 Mercado: LAY DRAW (1x2) — ${equipaDominante} a dominar`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_DRAW");
@@ -266,14 +329,30 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // MÉTODO 7 — LAY 0x0: Pressão crescente com score a zeros (20'–65')
         // Mercado: Correct Score. Complementa o LAY DRAW no mercado de 1x2.
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_0x0');
+        analyzer.addExpected('LAY_0x0', "janelaTempo - Janela 20'-65'", minAtual);
+        if (minAtual < 20 || minAtual > 65) analyzer.addMissing('LAY_0x0', "janelaTempo - Janela 20'-65'", `${minAtual}'`);
+        analyzer.addExpected('LAY_0x0', 'gols!=0-0 - Placar deve ser 0-0', jogo.placar || 'N/D');
+        if (!(gC === 0 && gF === 0)) analyzer.addMissing('LAY_0x0', 'gols!=0-0 - Placar deve ser 0-0', jogo.placar || 'N/D');
+        const atqCombinadoLay0x0 = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
+        analyzer.addExpected('LAY_0x0', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
+        if (jogo.pressao < 1.0) analyzer.addMissing('LAY_0x0', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
+        analyzer.addExpected('LAY_0x0', 'atqCombinado<8 - Ataques combinados ≥ 8', atqCombinadoLay0x0);
+        if (atqCombinadoLay0x0 < 8) analyzer.addMissing('LAY_0x0', 'atqCombinado<8 - Ataques combinados ≥ 8', atqCombinadoLay0x0);
+        const qualidadeReal0x0 = Math.max(qualCasa, qualFora) >= 0.20;
+        analyzer.addExpected('LAY_0x0', 'qualidadeBaixa - Qualidade (max) ≥ 20%', Math.round(Math.max(qualCasa,qualFora)*100));
+        if (!qualidadeReal0x0) analyzer.addMissing('LAY_0x0', 'qualidadeBaixa - Qualidade (max) ≥ 20%', Math.round(Math.max(qualCasa,qualFora)*100));
+        analyzer.addExpected('LAY_0x0', 'aceleracaoNegativa - Aceleração total ≥ 0', acCasa+acFora);
+        if ((acCasa + acFora) < 0) analyzer.addMissing('LAY_0x0', 'aceleracaoNegativa - Aceleração total ≥ 0', acCasa+acFora);
         if (!emCooldown && !alertas.lay00 && minAtual >= 20 && minAtual <= 65) {
             if (gC === 0 && gF === 0) {
                 const atqCombinado = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
                 // Exige que PELO MENOS UMA equipa tenha qualidade ≥ 0.20
                 const qualidadeReal = Math.max(qualCasa, qualFora) >= 0.20;
-                if (jogo.pressao >= 1.0 && atqCombinado >= 8 && qualidadeReal &&
+                    if (jogo.pressao >= 1.0 && atqCombinado >= 8 && qualidadeReal &&
                     (acCasa + acFora) >= 0) {
                     alertas.lay00 = true;
+                        analyzer.setMet('LAY_0x0');
                     const equipa = apmCasa >= apmFora ? 'CASA' : 'FORA';
                     const msg = `🔵 *WOLF QUANT - LAY 0x0*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Total: ${jogo.pressao.toFixed(2)} | Dominante: ${equipa}\n🔬 AtqP Combinado: ${atqCombinado} | Qualidade máx: ${(Math.max(qualCasa,qualFora)*100).toFixed(0)}%\n💡 Pressão crescente — lay no 0-0`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_0x0");
@@ -287,15 +366,36 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // ✅ Gate xG competitivo: casa deve ter criado ≥ 40% do xG da fora
         //    (evita entrar quando a fora merecia ganhar por muito mais)
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_0x1');
+        analyzer.addExpected('LAY_0x1', "janelaTempo - Janela 20'-82'", minAtual);
+        if (minAtual < 20 || minAtual > 82) analyzer.addMissing('LAY_0x1', "janelaTempo - Janela 20'-82'", `${minAtual}'`);
+        analyzer.addExpected('LAY_0x1', 'placar!=0-1 - Placar atual deve ser 0-1', jogo.placar || 'N/D');
+        if (!(gC === 0 && gF === 1)) analyzer.addMissing('LAY_0x1', 'placar!=0-1 - Placar atual deve ser 0-1', jogo.placar || 'N/D');
+        const xgCompetitivo0x1 = jogo.xgFora > 0 ? jogo.xgCasa >= jogo.xgFora * 0.40 : jogo.xgCasa >= 0.08;
+        analyzer.addExpected('LAY_0x1', 'apmCasa<0.6 - APM Casa ≥ 0.6', apmCasa);
+        if (apmCasa < 0.6) analyzer.addMissing('LAY_0x1', 'apmCasa<0.6 - APM Casa ≥ 0.6', apmCasa);
+        analyzer.addExpected('LAY_0x1', 'ataquesCasa<6 - Ataques Casa ≥ 6', jogo.momentum.ataquesCasa);
+        if (jogo.momentum.ataquesCasa < 6) analyzer.addMissing('LAY_0x1', 'ataquesCasa<6 - Ataques Casa ≥ 6', jogo.momentum.ataquesCasa);
+        const chutesEscCasa = jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa;
+        analyzer.addExpected('LAY_0x1', 'chutes+esc<2 - Chutes+Esc ≥ 2', chutesEscCasa);
+        if (chutesEscCasa < 2) analyzer.addMissing('LAY_0x1', 'chutes+esc<2 - Chutes+Esc ≥ 2', chutesEscCasa);
+        analyzer.addExpected('LAY_0x1', 'qualidadeBaixa - Qualidade do ataque ≥ 20%', Math.round(qualCasa*100));
+        if (qualCasa < 0.20) analyzer.addMissing('LAY_0x1', 'qualidadeBaixa - Qualidade do ataque ≥ 20%', Math.round(qualCasa*100));
+        analyzer.addExpected('LAY_0x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
+        if (acCasa <= 0) analyzer.addMissing('LAY_0x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
+        analyzer.addExpected('LAY_0x1', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
+        if (!xgCompetitivo0x1) analyzer.addMissing('LAY_0x1', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
         if (!emCooldown && !alertas.lay01 && minAtual >= 20 && minAtual <= 82) {
             if (gC === 0 && gF === 1) {
                 const xgCompetitivo = jogo.xgFora > 0
                     ? jogo.xgCasa >= jogo.xgFora * 0.40
                     : jogo.xgCasa >= 0.08;
-                if (apmCasa >= 0.6 && jogo.momentum.ataquesCasa >= 6 &&
+                const posseCasa = jogo.posseBolaCasa || 50;
+                    if (apmCasa >= 0.6 && jogo.momentum.ataquesCasa >= 6 &&
                     (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= 2 &&
                     qualCasa >= 0.20 && acCasa > 0 && xgCompetitivo) {
                     alertas.lay01 = true;
+                        analyzer.setMet('LAY_0x1');
                     const msg = `⚡ *WOLF QUANT - LAY 0x1*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: +${acCasa}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa} | Qualidade: ${(qualCasa*100).toFixed(0)}%\n💡 Casa a pressionar — back no empate`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_0x1");
                 }
@@ -306,15 +406,37 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // MÉTODO 8 — LAY 1x0: Fora perde 1-0 e pressiona (20'–82')
         // ✅ Mirror profissional do LAY 0x1 com gate xG competitivo
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_1x0');
+        analyzer.addExpected('LAY_1x0', "janelaTempo - Janela 20'-82'", minAtual);
+        if (minAtual < 20 || minAtual > 82) analyzer.addMissing('LAY_1x0', "janelaTempo - Janela 20'-82'", `${minAtual}'`);
+        analyzer.addExpected('LAY_1x0', `placar!=1-0 - Placar atual deve ser 1-0`, jogo.placar || 'N/D');
+        if (!(gC === 1 && gF === 0)) analyzer.addMissing('LAY_1x0', `placar!=1-0 - Placar atual deve ser 1-0`, jogo.placar || 'N/D');
+        const xgCompetitivo1x0 = jogo.xgCasa > 0 ? jogo.xgFora >= jogo.xgCasa * 0.40 : jogo.xgFora >= 0.08;
+        analyzer.addExpected('LAY_1x0', 'apmFora<0.6 - APM Fora >= 0.6', apmFora);
+        if (apmFora < 0.6) analyzer.addMissing('LAY_1x0', 'apmFora<0.6 - APM Fora >= 0.6', apmFora);
+        analyzer.addExpected('LAY_1x0', 'ataquesFora<6 - Ataques Fora >= 6', jogo.momentum.ataquesFora);
+        if (jogo.momentum.ataquesFora < 6) analyzer.addMissing('LAY_1x0', 'ataquesFora<6 - Ataques Fora >= 6', jogo.momentum.ataquesFora);
+        const chutesEscFora = jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora;
+        analyzer.addExpected('LAY_1x0', 'chutes+esc<2 - Chutes+Esc >= 2', chutesEscFora);
+        if (chutesEscFora < 2) analyzer.addMissing('LAY_1x0', 'chutes+esc<2 - Chutes+Esc >= 2', chutesEscFora);
+        analyzer.addExpected('LAY_1x0', 'qualidadeBaixa - Qualidade do ataque >= 0.20', Math.round(qualFora*100));
+        if (qualFora < 0.20) analyzer.addMissing('LAY_1x0', 'qualidadeBaixa - Qualidade do ataque >= 0.20', Math.round(qualFora*100));
+        analyzer.addExpected('LAY_1x0', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
+        if (acFora <= 0) analyzer.addMissing('LAY_1x0', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
+        analyzer.addExpected('LAY_1x0', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
+        if (!xgCompetitivo1x0) analyzer.addMissing('LAY_1x0', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
         if (!emCooldown && !alertas.lay10 && minAtual >= 20 && minAtual <= 82) {
             if (gC === 1 && gF === 0) {
                 const xgCompetitivo = jogo.xgCasa > 0
                     ? jogo.xgFora >= jogo.xgCasa * 0.40
                     : jogo.xgFora >= 0.08;
-                if (apmFora >= 0.6 && jogo.momentum.ataquesFora >= 6 &&
+                const posseCasa = jogo.posseBolaCasa || 50;
+                    if (apmFora >= 0.6 && jogo.momentum.ataquesFora >= 6 &&
                     (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) >= 2 &&
                     qualFora >= 0.20 && acFora > 0 && xgCompetitivo) {
                     alertas.lay10 = true;
+                        analyzer.setMet('LAY_1x0');
+                    const posseLabel = posseCasa !== 50 ? ` | Posse Casa: ${posseCasa}%` : '';
                     const msg = `⚡ *WOLF QUANT - LAY 1x0*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: +${acFora}\n🔬 AtqP: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora} | Qualidade: ${(qualFora*100).toFixed(0)}%\n💡 Fora a pressionar — back no empate`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_1x0");
                 }
@@ -327,16 +449,36 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // Thresholds mais exigentes porque recuperar de 1-2 é mais difícil.
         // Casa precisa de 1 golo para empatar — lay na vitória da fora.
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_1x2');
+        analyzer.addExpected('LAY_1x2', "janelaTempo - Janela 20'-72'", minAtual);
+        if (minAtual < 20 || minAtual > 72) analyzer.addMissing('LAY_1x2', "janelaTempo - Janela 20'-72'", `${minAtual}'`);
+        analyzer.addExpected('LAY_1x2', 'placar!=1-2 - Placar atual deve ser 1-2', jogo.placar || 'N/D');
+        if (!(gC === 1 && gF === 2)) analyzer.addMissing('LAY_1x2', 'placar!=1-2 - Placar atual deve ser 1-2', jogo.placar || 'N/D');
+        const xgCompetitivo1x2 = jogo.xgFora > 0 ? jogo.xgCasa >= jogo.xgFora * 0.35 : jogo.xgCasa >= 0.12;
+        analyzer.addExpected('LAY_1x2', 'apmCasa<0.8 - APM Casa ≥ 0.8', apmCasa);
+        if (apmCasa < 0.8) analyzer.addMissing('LAY_1x2', 'apmCasa<0.8 - APM Casa ≥ 0.8', apmCasa);
+        analyzer.addExpected('LAY_1x2', 'ataquesCasa<8 - Ataques Casa ≥ 8', jogo.momentum.ataquesCasa);
+        if (jogo.momentum.ataquesCasa < 8) analyzer.addMissing('LAY_1x2', 'ataquesCasa<8 - Ataques Casa ≥ 8', jogo.momentum.ataquesCasa);
+        const chutesEscCasa1x2 = jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa;
+        analyzer.addExpected('LAY_1x2', 'chutes+esc<3 - Chutes+Esc ≥ 3', chutesEscCasa1x2);
+        if (chutesEscCasa1x2 < 3) analyzer.addMissing('LAY_1x2', 'chutes+esc<3 - Chutes+Esc ≥ 3', chutesEscCasa1x2);
+        analyzer.addExpected('LAY_1x2', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualCasa*100));
+        if (qualCasa < 0.22) analyzer.addMissing('LAY_1x2', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualCasa*100));
+        analyzer.addExpected('LAY_1x2', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
+        if (acCasa <= 0) analyzer.addMissing('LAY_1x2', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
+        analyzer.addExpected('LAY_1x2', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
+        if (!xgCompetitivo1x2) analyzer.addMissing('LAY_1x2', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
         if (!emCooldown && !alertas.lay12 && minAtual >= 20 && minAtual <= 72) {
             if (gC === 1 && gF === 2) {
                 const xgCompetitivo = jogo.xgFora > 0
                     ? jogo.xgCasa >= jogo.xgFora * 0.35
                     : jogo.xgCasa >= 0.12;
                 const posseCasa = jogo.posseBolaCasa || 50;
-                if (apmCasa >= 0.8 && jogo.momentum.ataquesCasa >= 8 &&
+                    if (apmCasa >= 0.8 && jogo.momentum.ataquesCasa >= 8 &&
                     (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= 3 &&
                     qualCasa >= 0.22 && acCasa > 0 && xgCompetitivo) {
                     alertas.lay12 = true;
+                        analyzer.setMet('LAY_1x2');
                     const posseLabel = posseCasa !== 50 ? ` | Posse Casa: ${posseCasa}%` : '';
                     const msg = `⚡ *WOLF QUANT - LAY 1x2*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | 🔴 Casa a perder 1-2${posseLabel}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: +${acCasa} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa} | Qualidade: ${(qualCasa*100).toFixed(0)}%\n⚠️ Risco elevado — precisa de 1 golo para empatar`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_1x2");
@@ -348,16 +490,36 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // MÉTODO 11 — LAY 2x1: Fora perde 2-1 e pressiona forte (20'–72')
         // ✅ NOVO: Mirror do LAY 1x2 para a equipa visitante.
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_2x1');
+        analyzer.addExpected('LAY_2x1', "janelaTempo - Janela 20'-72'", minAtual);
+        if (minAtual < 20 || minAtual > 72) analyzer.addMissing('LAY_2x1', "janelaTempo - Janela 20'-72'", `${minAtual}'`);
+        analyzer.addExpected('LAY_2x1', 'placar!=2-1 - Placar atual deve ser 2-1', jogo.placar || 'N/D');
+        if (!(gC === 2 && gF === 1)) analyzer.addMissing('LAY_2x1', 'placar!=2-1 - Placar atual deve ser 2-1', jogo.placar || 'N/D');
+        const xgCompetitivo2x1 = jogo.xgCasa > 0 ? jogo.xgFora >= jogo.xgCasa * 0.35 : jogo.xgFora >= 0.12;
+        analyzer.addExpected('LAY_2x1', 'apmFora<0.8 - APM Fora ≥ 0.8', apmFora);
+        if (apmFora < 0.8) analyzer.addMissing('LAY_2x1', 'apmFora<0.8 - APM Fora ≥ 0.8', apmFora);
+        analyzer.addExpected('LAY_2x1', 'ataquesFora<8 - Ataques Fora ≥ 8', jogo.momentum.ataquesFora);
+        if (jogo.momentum.ataquesFora < 8) analyzer.addMissing('LAY_2x1', 'ataquesFora<8 - Ataques Fora ≥ 8', jogo.momentum.ataquesFora);
+        const chutesEscFora21 = jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora;
+        analyzer.addExpected('LAY_2x1', 'chutes+esc<3 - Chutes+Esc ≥ 3', chutesEscFora21);
+        if (chutesEscFora21 < 3) analyzer.addMissing('LAY_2x1', 'chutes+esc<3 - Chutes+Esc ≥ 3', chutesEscFora21);
+        analyzer.addExpected('LAY_2x1', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualFora*100));
+        if (qualFora < 0.22) analyzer.addMissing('LAY_2x1', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualFora*100));
+        analyzer.addExpected('LAY_2x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
+        if (acFora <= 0) analyzer.addMissing('LAY_2x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
+        analyzer.addExpected('LAY_2x1', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
+        if (!xgCompetitivo2x1) analyzer.addMissing('LAY_2x1', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
         if (!emCooldown && !alertas.lay21 && minAtual >= 20 && minAtual <= 72) {
             if (gC === 2 && gF === 1) {
                 const xgCompetitivo = jogo.xgCasa > 0
                     ? jogo.xgFora >= jogo.xgCasa * 0.35
                     : jogo.xgFora >= 0.12;
                 const posseFora = jogo.posseBolaFora || 50;
-                if (apmFora >= 0.8 && jogo.momentum.ataquesFora >= 8 &&
+                    if (apmFora >= 0.8 && jogo.momentum.ataquesFora >= 8 &&
                     (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) >= 3 &&
                     qualFora >= 0.22 && acFora > 0 && xgCompetitivo) {
                     alertas.lay21 = true;
+                        analyzer.setMet('LAY_2x1');
                     const posseLabel = posseFora !== 50 ? ` | Posse Fora: ${posseFora}%` : '';
                     const msg = `⚡ *WOLF QUANT - LAY 2x1*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | 🔴 Fora a perder 2-1${posseLabel}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: +${acFora} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora} | Qualidade: ${(qualFora*100).toFixed(0)}%\n⚠️ Risco elevado — precisa de 1 golo para empatar`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_2x1");
@@ -370,6 +532,25 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // ✅ Ratio dominância ≥ 1.8x (era 1.5 — muito fácil de atingir)
         // ✅ A equipa dominante deve ter qualidade ≥ 0.20 (não só volume)
         // ─────────────────────────────────────────────────────────────────
+        analyzer.init('LAY_1x1');
+        analyzer.addExpected('LAY_1x1', "janelaTempo - Janela 30'-78'", minAtual);
+        if (minAtual < 30 || minAtual > 78) analyzer.addMissing('LAY_1x1', "janelaTempo - Janela 30'-78'", `${minAtual}'`);
+        analyzer.addExpected('LAY_1x1', 'placar!=1-1 - Placar atual deve ser 1-1', jogo.placar || 'N/D');
+        if (!(gC === 1 && gF === 1)) analyzer.addMissing('LAY_1x1', 'placar!=1-1 - Placar atual deve ser 1-1', jogo.placar || 'N/D');
+        const atqCombinado11 = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
+        analyzer.addExpected('LAY_1x1', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
+        if (jogo.pressao < 1.0) analyzer.addMissing('LAY_1x1', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
+        analyzer.addExpected('LAY_1x1', 'atqCombinado<10 - Ataques combinados ≥ 10', atqCombinado11);
+        if (atqCombinado11 < 10) analyzer.addMissing('LAY_1x1', 'atqCombinado<10 - Ataques combinados ≥ 10', atqCombinado11);
+        const chutesCombinados = jogo.momentum.chutesNoAlvoCasa + jogo.momentum.chutesNoAlvoFora;
+        analyzer.addExpected('LAY_1x1', 'chutesCombinados<2 - Chutes ao alvo combinados ≥ 2', chutesCombinados);
+        if (chutesCombinados < 2) analyzer.addMissing('LAY_1x1', 'chutesCombinados<2 - Chutes ao alvo combinados ≥ 2', chutesCombinados);
+        const ratio11 = (apmCasa > 0 && apmFora > 0) ? Math.max(apmCasa, apmFora) / Math.min(apmCasa, apmFora) : 0;
+        analyzer.addExpected('LAY_1x1', 'ratio<1.8 - Dominância ≥ 1.8x', ratio11);
+        if (ratio11 < 1.8) analyzer.addMissing('LAY_1x1', 'ratio<1.8 - Dominância ≥ 1.8x', ratio11);
+        const qualDominante11 = apmCasa >= apmFora ? qualCasa : qualFora;
+        analyzer.addExpected('LAY_1x1', 'qualidadeBaixa - Qualidade do ataque ≥ 20%', Math.round(qualDominante11*100));
+        if (qualDominante11 < 0.20) analyzer.addMissing('LAY_1x1', 'qualidadeBaixa - Qualidade do ataque ≥ 20%', Math.round(qualDominante11*100));
         if (!emCooldown && !alertas.lay11 && minAtual >= 30 && minAtual <= 78) {
             if (gC === 1 && gF === 1) {
                 const atqCombinado     = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
@@ -378,9 +559,10 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                     ? Math.max(apmCasa, apmFora) / Math.min(apmCasa, apmFora) : 0;
                 const equipaDominante  = apmCasa >= apmFora ? 'CASA' : 'FORA';
                 const qualDominante    = apmCasa >= apmFora ? qualCasa : qualFora;
-                if (jogo.pressao >= 1.0 && atqCombinado >= 10 && chutesCombinados >= 2 &&
+                    if (jogo.pressao >= 1.0 && atqCombinado >= 10 && chutesCombinados >= 2 &&
                     ratio >= 1.8 && qualDominante >= 0.20) {
                     alertas.lay11 = true;
+                        analyzer.setMet('LAY_1x1');
                     const msg = `🎯 *WOLF QUANT - LAY 1x1*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Total: ${jogo.pressao.toFixed(2)} | Dominância: ${equipaDominante} (${ratio.toFixed(1)}x)\n🔬 AtqP Combinado: ${atqCombinado} | Chutes Alvo: ${chutesCombinados} | Qualidade: ${(qualDominante*100).toFixed(0)}%\n💡 ${equipaDominante === 'CASA' ? 'Casa' : 'Fora'} a dominar — próximo gol esperado`;
                     require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_1x1");
                 }
@@ -400,6 +582,9 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             // Lógica: qualidade do mercado (odds) + qualidade do campo (APM)
             // Janela: 15'–70' (após 70' a odd cai demasiado para ter valor)
             // ─────────────────────────────────────────────────────────────
+            analyzer.init('FAVORITO_VENCE');
+            analyzer.addExpected('FAVORITO_VENCE', 'janelaTempo');
+            if (minAtual < 15 || minAtual > 70) analyzer.addMissing('FAVORITO_VENCE', 'janelaTempo', `${minAtual}'`);
             if (!emCooldown && !alertas.favoritoVence && minAtual >= 15 && minAtual <= 70) {
                 const ehEmpate = (gC === gF);
                 if (ehEmpate && odds.oddCasaBack && odds.oddForaBack) {
@@ -414,6 +599,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
 
                     if (favoritoTenAPM) {
                         alertas.favoritoVence = true;
+                        analyzer.setMet('FAVORITO_VENCE');
                         const equipa     = casaEFavorita ? 'CASA' : 'FORA';
                         const oddFav     = casaEFavorita ? odds.oddCasaBack : odds.oddForaBack;
                         const apmFav     = casaEFavorita ? apmCasa : apmFora;
@@ -430,6 +616,9 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             // Mercado: Back no favorito OU Lay no azarão que lidera
             // Janela: 20'–75'
             // ─────────────────────────────────────────────────────────────
+            analyzer.init('FAVORITO_VIRA');
+            analyzer.addExpected('FAVORITO_VIRA', 'janelaTempo');
+            if (minAtual < 20 || minAtual > 75) analyzer.addMissing('FAVORITO_VIRA', 'janelaTempo', `${minAtual}'`);
             if (!emCooldown && !alertas.favoritoVira && minAtual >= 20 && minAtual <= 75) {
                 if (odds.oddCasaBack && odds.oddForaBack) {
                     // Casa é favorita mas está a perder (score 0-1 ou 1-2)
@@ -448,6 +637,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
 
                     if (casaFavoritaPerdendo || foraFavoritaPerdendo) {
                         alertas.favoritoVira = true;
+                        analyzer.setMet('FAVORITO_VIRA');
                         const equipa     = casaFavoritaPerdendo ? 'CASA' : 'FORA';
                         const oddFav     = casaFavoritaPerdendo ? odds.oddCasaBack : odds.oddForaBack;
                         const oddAzarao  = casaFavoritaPerdendo ? odds.oddForaLay  : odds.oddCasaLay;
@@ -457,9 +647,16 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                         const msg = `🔄 *WOLF QUANT - FAVORITO VIRA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | Score: ${jogo.placar} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📈 Odd ${equipa}: ${oddFav} | Lay Azarão: ${oddAzarao || 'N/D'}\n🔬 APM ${equipa}: ${apmFav.toFixed(2)} | AtqP: ${atqFav} | Qualidade: ${(qualFav*100).toFixed(0)}%\n💡 Favorito a pressionar — BACK ${equipa} ou LAY no adversário`;
                         require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "FAVORITO_VIRA");
                     }
+                    else {
+                        // mark missing reasons when favoritoVira conditions not met
+                        if (!(odds.oddCasaBack && odds.oddForaBack)) analyzer.addMissing('FAVORITO_VIRA', 'oddsN/D');
+                        if (!casaFavoritaPerdendo && !foraFavoritaPerdendo) analyzer.addMissing('FAVORITO_VIRA', 'favoritoNaoPerdendo');
+                    }
                 }
             }
         }
+
+        // analysis snapshot is attached to jogo._engineAnalysis and will be sent by logger; no extra debug prints here
     }
 }
 

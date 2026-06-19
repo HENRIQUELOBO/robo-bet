@@ -2,7 +2,7 @@ const puppeteer = require('puppeteer');
 
 async function rodarMinerador() {
     console.log('[Scout] Iniciando Robô Sentinela...');
-    const browser = await puppeteer.launch({ headless: false, args: ['--no-sandbox'] });
+    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
     const page = await browser.newPage();
     const processados = new Set();
 

@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const config = require('./config');
-const {_formatarDataHora, _sanitizarNomeJogo} = require('./util');
+const { formatarDataHora, sanitizarNomeJogo } = require('./util');
 const serverHttp = require('./httpServer');
 
 const CAMINHO_LOG_CSV = path.join(__dirname, 'historico_gatilhos.csv');
@@ -39,8 +39,8 @@ function registrarTelemetriaContinua(jogo) {
         : (jogo.id ? `jogo_${jogo.id}` : null);
     if (!nomeEfetivo) return;
     try {
-        const { data: dataFormatada, hora: horaMinutoSegundo } = _formatarDataHora();
-        const nomeJogoSanitizado = _sanitizarNomeJogo(nomeEfetivo);
+        const { data: dataFormatada, hora: horaMinutoSegundo } = formatarDataHora();
+        const nomeJogoSanitizado = sanitizarNomeJogo(nomeEfetivo);
         const pastaTelemetria = path.join(__dirname, 'log', 'telemetria');
         if (!fs.existsSync(pastaTelemetria)) fs.mkdirSync(pastaTelemetria, { recursive: true });
 
@@ -137,6 +137,8 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
         const withAnalysis = listaJogos.filter(j => j.engineAnalysis != null).length;
         console.log(`[LOGGER] Enviando ${listaJogos.length} jogos via SSE — engineAnalysis presente em ${withAnalysis}`);
     } catch (e) { /* ignore logging errors */ }
+
+    // monitor notifications removed — broadcasting to SSE only
     clientesSSE.forEach(res => { res.write(`data: ${JSON.stringify(listaJogos)}\n\n`); });
 }
 
@@ -144,20 +146,20 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
 async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
     const fsp = fs.promises;
     // Ensure header exists (create file with header if missing) using async ops
+    // Precompute signalId and line so we can notify monitor even if file write fails
+    const matchQual = mensagem.match(/Qualidade(?:\s+m[aá]x)?:\s*(\d+)%/i);
+    const qualidadeSinal = matchQual ? `${matchQual[1]}%` : 'N/D';
+    const { data: dataHoje, hora: horaAgora } = formatarDataHora();
+    const signalId = `sig_${Date.now()}_${Math.floor(Math.random()*100000)}`;
+    const placarParaCsv = jogo.placar || 'N/D';
+    const linhaLog = `${dataHoje} ${horaAgora};${(jogo.nomePartida||'').replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${placarParaCsv};${(jogo.pressao||0).toFixed(2)};${(Math.max(jogo.xgCasa||0, jogo.xgFora||0)).toFixed(2)};${qualidadeSinal};PENDING;${signalId};\n`;
+
     try {
         try { await fsp.access(CAMINHO_LOG_CSV); } catch (err) {
-            // file doesn't exist — create with header (including STATUS column for future use)
             const header = "DATA_HORA;PARTIDA;METODO;TEMPO_DISPARO;PLACAR_MOMENTO;APM_MOMENTO;XG_MAX_MOMENTO;QUALIDADE_SINAL;STATUS;ID;\n";
             await fsp.writeFile(CAMINHO_LOG_CSV, header, 'utf8');
         }
 
-        // Extrai o valor de Qualidade da mensagem (ex: "Qualidade: 45%" ou "Qualidade máx: 38%")
-        const matchQual = mensagem.match(/Qualidade(?:\\s+m[aá]x)?:\\s*(\\d+)%/i);
-        const qualidadeSinal = matchQual ? `${matchQual[1]}%` : 'N/D';
-        const { data: dataHoje, hora: horaAgora } = _formatarDataHora();
-        const signalId = `sig_${Date.now()}_${Math.floor(Math.random()*100000)}`;
-        const linhaLog = `${dataHoje} ${horaAgora};${jogo.nomePartida.replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${jogo.placar};${jogo.pressao.toFixed(2)};${Math.max(jogo.xgCasa, jogo.xgFora).toFixed(2)};${qualidadeSinal};PENDING;${signalId};\n`;
-        // append asynchronously (await to catch errors)
         try {
             await fsp.appendFile(CAMINHO_LOG_CSV, linhaLog, 'utf8');
         } catch (appendErr) {
@@ -165,27 +167,41 @@ async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
             try {
                 fs.appendFileSync(CAMINHO_LOG_CSV, linhaLog, 'utf8');
             } catch (syncErr) {
-                throw syncErr; // will be caught by outer catch
+                // rethrow to be handled below, but we still will notify monitor
+                throw syncErr;
             }
-        }
-
-        // Notify monitor in-memory (non-blocking) so it can start observing this signal
-        try {
-            const monitor = require('./monitor_results');
-            if (monitor && typeof monitor.registrarSinalPendente === 'function') {
-                monitor.registrarSinalPendente({ id: signalId, jogoId: idJogo, metodo: metodoAtivado, tempoEmissao: jogo.tempo, placar: jogo.placar });
-            }
-        } catch (ignore) {
-            // ignore if monitor not present or errors during require
         }
     } catch (e) {
         process.stderr.write(`[LOGGER ERROR] enviarAlertaTelegram (local write): ${e.message}\n`);
     }
 
+    // Notify monitor in-memory (non-blocking) so it can start observing this signal
+    try {
+        const monitor = require('./monitor_results');
+        if (monitor && typeof monitor.registrarSinalPendente === 'function') {
+            monitor.registrarSinalPendente({ id: signalId, jogoId: idJogo, metodo: metodoAtivado, tempoEmissao: jogo.tempo, placar: jogo.placar });
+        }
+    } catch (ignore) {
+        // ignore if monitor not present or errors during require
+    }
+
+    // Ensure message includes placar for easier traceability in telegram
+    let mensagemParaEnviar = mensagem;
+    try {
+        const hasPlacar = /placar\s*[:\-]/i.test(mensagem);
+        const placarText = jogo.placar || placarParaCsv;
+        if (!hasPlacar && placarText) {
+            // append small suffix with placar
+            mensagemParaEnviar = `${mensagem}\n\n⚽ Placar: ${placarText}`;
+        }
+    } catch (e) {
+        // ignore formatting errors
+    }
+
     // If Telegram token is configured, also send the message to Telegram (best-effort)
     if (config.TELEGRAM_TOKEN && config.TELEGRAM_TOKEN !== 'SEU_BOT_TOKEN_AQUI') {
         try {
-            await axios.post(`https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`, { chat_id: config.TELEGRAM_CHAT_ID, text: mensagem, parse_mode: 'Markdown' });
+            await axios.post(`https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`, { chat_id: config.TELEGRAM_CHAT_ID, text: mensagemParaEnviar, parse_mode: 'Markdown' });
         } catch (e) {
             process.stderr.write(`[LOGGER ERROR] enviarAlertaTelegram (telegram): ${e.message}\n`);
         }

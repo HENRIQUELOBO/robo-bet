@@ -232,6 +232,24 @@ async function iniciarRobo() {
             const novaAba = await browser.newPage();
             await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
             await novaAba.goto(urlValida, { waitUntil: 'domcontentloaded' });
+            // immediately try to dismiss cookie/privacy modals in the newly opened page
+            try {
+                const acceptSelectors = [
+                    'button[aria-label*="accept"]', 'button[aria-label*="Aceitar"]', 'button[aria-label*="Aceitar tudo"]',
+                    'button[class*="accept"]', 'button[class*="agree"]', 'button[class*="cookie"]', 'button[class*="consent"]',
+                    '#onetrust-accept-btn-handler', '.onetrust-accept-btn-handler', '.gdpr-accept', '.cookie-consent button',
+                    'button:contains("Aceitar")', 'button:contains("Accept")', 'button:contains("Concordo")'
+                ];
+                for (let sel of acceptSelectors) {
+                    try {
+                        const el = await novaAba.$(sel);
+                        if (el) {
+                            await novaAba.evaluate(s => { const e = document.querySelector(s); if (e) e.click(); }, sel);
+                            await novaAba.waitForTimeout(600);
+                        }
+                    } catch (e) { /* ignore per-selector errors */ }
+                }
+            } catch (e) { /* non-fatal */ }
             poolDeJogos.set(idJogo_unico, {
                 pageContext: novaAba, nomePartida: 'Carregando...', id: idJogo_unico, tempo: 0, placar: '0-0', noIntervalo: false, sincronizadoComFeed: false, momentumResetado2T: false,
                 ultimoTempoRegistrado: 0, ciclosSemMudancaTempo: 0,
@@ -251,176 +269,177 @@ async function iniciarRobo() {
 
     // Loop Mestre assíncrono recursivo (A cada 5 segundos)
     setInterval(async () => {
-        if (poolDeJogos.size === 0) return;
+        try {
+            if (poolDeJogos.size === 0) return;
 
-        for (let [idJogo, jogo] of poolDeJogos.entries()) {
-            try {
-                // Raspagem isolada do contexto da página para capturar os nomes das equipas
-                const dadosContexto = await jogo.pageContext.evaluate(() => {
-                    let info = { timeCasa: '', timeFora: '', tituloAba: document.title };
+            for (let [idJogo, jogo] of poolDeJogos.entries()) {
+                try {
+                    // Raspagem isolada do contexto da página para capturar os nomes das equipas
+                    const dadosContexto = await jogo.pageContext.evaluate(() => {
+                        let info = { timeCasa: '', timeFora: '', tituloAba: document.title };
 
-                    // Camada 1: wire:snapshot (Livewire — suporta múltiplos campos de nome por região)
-                    let rootDiv = document.querySelector('[wire\\:snapshot]');
-                    if (rootDiv) {
+                        // Camada 1: wire:snapshot (Livewire — suporta múltiplos campos de nome por região)
+                        let rootDiv = document.querySelector('[wire\\:snapshot]');
+                        if (rootDiv) {
+                            try {
+                                let snapshot = JSON.parse(rootDiv.getAttribute('wire:snapshot'));
+                                let d = snapshot && snapshot.data;
+                                if (d) {
+                                    info.timeCasa = d.timeCasa || d.homeTeam || d.home_team || d.homeName || d.team_home || '';
+                                    info.timeFora = d.timeFora || d.awayTeam || d.away_team || d.awayName || d.team_away || '';
+                                }
+                            } catch (e) {}
+                        }
+
+                        // Camada 2: seletores DOM diretos de nome de equipa
+                        if (!info.timeCasa || !info.timeFora) {
+                            const seletoresCasa = ['.home-team-name', '.home .team-name', '[class*="homeTeam"] [class*="name"]', '[class*="home-team"]', '.participant-name.home', '[data-home-team]'];
+                            const seletoresFora = ['.away-team-name', '.away .team-name', '[class*="awayTeam"] [class*="name"]', '[class*="away-team"]', '.participant-name.away', '[data-away-team]'];
+                            for (let sel of seletoresCasa) {
+                                let el = document.querySelector(sel);
+                                if (el && el.textContent.trim()) { info.timeCasa = el.textContent.trim(); break; }
+                            }
+                            for (let sel of seletoresFora) {
+                                let el = document.querySelector(sel);
+                                if (el && el.textContent.trim()) { info.timeFora = el.textContent.trim(); break; }
+                            }
+                        }
+
+                        // Camada 3: meta og:title (ex: "Sportivo Barracas vs General Lamadrid - RadarFutebol")
+                        if (!info.timeCasa || !info.timeFora) {
+                            let metaOg = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="title"]');
+                            if (metaOg) info.tituloAba = metaOg.getAttribute('content') || info.tituloAba;
+                        }
+
+                        return info;
+                    });
+
+                    if (dadosContexto.timeCasa && dadosContexto.timeFora) {
+                        jogo.nomePartida = `${dadosContexto.timeCasa} v ${dadosContexto.timeFora}`;
+                    } else if (dadosContexto.tituloAba) {
+                        // Tenta extrair "Time A vs/v/x Time B" do título
+                        let tit = dadosContexto.tituloAba;
+                        let match = tit.match(/^(.+?)\s+(?:vs\.?|v|x)\s+(.+?)(?:\s*[-|]|$)/i);
+                        if (match) {
+                            jogo.nomePartida = `${match[1].trim()} v ${match[2].trim()}`;
+                        } else if (tit && !tit.toLowerCase().includes('radar') && !tit.toLowerCase().includes('futebol') && tit.length > 5) {
+                            jogo.nomePartida = tit.split('|')[0].trim();
+                        }
+                        // Se o título é genérico (só nome do site), mantém o fallback do ID abaixo
+                    }
+
+                    const todosOsFrames = await jogo.pageContext.frames();
+                    let frameRadar = todosOsFrames.find(f =>
+                        f.url().includes('radarfutebol.xyz/scoreboards') ||
+                        f.name() === 'iframe-williamhill'
+                    );
+
+                    let contextoAlvo = frameRadar ? frameRadar : jogo.pageContext;
+
+                    // Extração baseada nos seletores estruturais estáveis
+                    const r = await contextoAlvo.evaluate(() => {
+                        let tempoLocal = 0; let placarLocal = ''; let statusIntervalo = false; let statusEncerrado = false;
+                        let atqC = 0, atqF = 0, escC = 0, escF = 0, chC = 0, chF = 0, chForaC = 0, chForaF = 0, posseC = 50, posseF = 50;
+
+                        // 🔍 CAMADA 1: Seletor expandido para cobrir múltiplas versões do radar
+                        let spanRelogio = document.querySelector(
+                            '[data-push="clock"], .clockWrapper span, .match-clock, .match-time, ' +
+                            '[class*="clock"], [class*="Clock"], [class*="timer"], [class*="Timer"], ' +
+                            '.period-time, .live-time, .game-time, [data-testid="match-time"]'
+                        );
+                        if (spanRelogio && spanRelogio.textContent) {
+                            let textoCru = spanRelogio.textContent.trim().toLowerCase();
+
+                            // Detecção estrutural de fim de partida — palavras-chave expandidas
+                            if (textoCru.includes('fim') || textoCru.includes('ft') || textoCru.includes('encerrado') ||
+                                textoCru.includes('terminado') || textoCru.includes('encerrada') || textoCru.includes('terminada') ||
+                                textoCru.includes('full time') || textoCru.includes('fulltime') || textoCru.includes('final') ||
+                                textoCru.includes('resultado final') || textoCru.includes('ended') || textoCru.includes('finished') ||
+                                textoCru.includes('apito final')) {
+                                statusEncerrado = true;
+                            } else if (textoCru.includes('intervalo') || textoCru.includes('ht') || textoCru.includes('int')) {
+                                statusIntervalo = true; tempoLocal = 45;
+                            } else {
+                                let matchHora = textoCru.match(/(\d{1,2}):(\d{2})/);
+                                if (matchHora) {
+                                    let m = parseInt(matchHora[1]) || 0; let s = parseInt(matchHora[2]) || 0;
+                                    tempoLocal = s > 0 ? m + 1 : m;
+                                }
+                            }
+                        }
+
+                        // 🔍 CAMADA 2: Scan por badges/elementos de FT quando o relógio não é encontrado
+                        if (!statusEncerrado) {
+                            let ftBadge = document.querySelector(
+                                '.ft-badge, .status-ft, [class*="fulltime"], [class*="full-time"], ' +
+                                '[class*="finished"], [class*="ended"], [class*="status-ended"], ' +
+                                '[data-status="FT"], [data-status="ft"], [data-status="finished"]'
+                            );
+                            if (ftBadge) statusEncerrado = true;
+                        }
+
+                        // 🔍 CAMADA 3: Busca textual em elementos de status da página
+                        if (!statusEncerrado) {
+                            let statusEl = document.querySelector('.match-status, .game-status, .status-label, [class*="matchStatus"], [class*="gameStatus"]');
+                            if (statusEl) {
+                                let st = statusEl.textContent.trim().toLowerCase();
+                                if (st.includes('ft') || st.includes('fim') || st.includes('terminado') || st.includes('encerrado') || st.includes('final') || st.includes('finished') || st.includes('ended')) {
+                                    statusEncerrado = true;
+                                }
+                            }
+                        }
+
+                        // --- Detecção robusta de 'Final da Partida' — procura pelo texto em toda a página
+                        // Alguns sites mostram a palavra "Final" fora do relógio; escaneamos o body para detectar imediatamente.
                         try {
-                            let snapshot = JSON.parse(rootDiv.getAttribute('wire:snapshot'));
-                            let d = snapshot && snapshot.data;
-                            if (d) {
-                                info.timeCasa = d.timeCasa || d.homeTeam || d.home_team || d.homeName || d.team_home || '';
-                                info.timeFora = d.timeFora || d.awayTeam || d.away_team || d.awayName || d.team_away || '';
+                            const bodyText = (document.body && document.body.innerText) ? document.body.innerText.toLowerCase() : '';
+                            if (!statusEncerrado) {
+                                if (/\bfinal\s*(da|de)?\s*partida\b/.test(bodyText) || /\bfim\s*(da|do|de)?\s*jogo\b/.test(bodyText) || bodyText.includes('resultado final') || bodyText.includes('apito final')) {
+                                    statusEncerrado = true;
+                                }
                             }
                         } catch (e) {}
-                    }
 
-                    // Camada 2: seletores DOM diretos de nome de equipa
-                    if (!info.timeCasa || !info.timeFora) {
-                        const seletoresCasa = ['.home-team-name', '.home .team-name', '[class*="homeTeam"] [class*="name"]', '[class*="home-team"]', '.participant-name.home', '[data-home-team]'];
-                        const seletoresFora = ['.away-team-name', '.away .team-name', '[class*="awayTeam"] [class*="name"]', '[class*="away-team"]', '.participant-name.away', '[data-away-team]'];
-                        for (let sel of seletoresCasa) {
-                            let el = document.querySelector(sel);
-                            if (el && el.textContent.trim()) { info.timeCasa = el.textContent.trim(); break; }
+                        let nósTexto = Array.from(document.querySelectorAll('div, span, p, b')).map(el => el.textContent ? el.textContent.trim() : '');
+                        let matchPlacar = nósTexto.find(t => /^\d+\s*-\s*\d+$/.test(t));
+                        if (matchPlacar) placarLocal = matchPlacar.replace(/\s+/g, '');
+
+                        // Captura o src do iframe do gráfico Sofascore Momentum
+                        let momentumSrc = '';
+                        const iframeMomentum = document.querySelector('[id^="sofascore-momentum-"]');
+                        if (iframeMomentum) {
+                            momentumSrc = iframeMomentum.src || iframeMomentum.getAttribute('src') || '';
                         }
-                        for (let sel of seletoresFora) {
-                            let el = document.querySelector(sel);
-                            if (el && el.textContent.trim()) { info.timeFora = el.textContent.trim(); break; }
-                        }
-                    }
 
-                    // Camada 3: meta og:title (ex: "Sportivo Barracas vs General Lamadrid - RadarFutebol")
-                    if (!info.timeCasa || !info.timeFora) {
-                        let metaOg = document.querySelector('meta[property="og:title"]') || document.querySelector('meta[name="title"]');
-                        if (metaOg) info.tituloAba = metaOg.getAttribute('content') || info.tituloAba;
-                    }
+                        let wrapper = document.getElementById('stats_wrapper');
+                        if (wrapper) {
+                            // Seletor expandido: cobre variações de nome usadas por diferentes ligas/feeds do radar
+                            let blocoAtq = wrapper.querySelector(
+                                '[data-stat="dangerousAttacks"], [data-stat="dangerous_attacks"], ' +
+                                '[data-stat="dangerousattacks"], [data-stat="DangerousAttacks"], ' +
+                                '[data-stat="attacks"], [data-stat="Attacks"]'
+                            );
+                            if (blocoAtq) { atqC = parseInt(blocoAtq.querySelector('.home')?.textContent || '0') || 0; atqF = parseInt(blocoAtq.querySelector('.away')?.textContent || '0') || 0; }
 
-                    return info;
-                });
+                            let blocoEsc = wrapper.querySelector('[data-stat="corners"]');
+                            if (blocoEsc) { escC = parseInt(blocoEsc.querySelector('.home')?.textContent || '0') || 0; escF = parseInt(blocoEsc.querySelector('.away')?.textContent || '0') || 0; }
 
-                if (dadosContexto.timeCasa && dadosContexto.timeFora) {
-                    jogo.nomePartida = `${dadosContexto.timeCasa} v ${dadosContexto.timeFora}`;
-                } else if (dadosContexto.tituloAba) {
-                    // Tenta extrair "Time A vs/v/x Time B" do título
-                    let tit = dadosContexto.tituloAba;
-                    let match = tit.match(/^(.+?)\s+(?:vs\.?|v|x)\s+(.+?)(?:\s*[-|]|$)/i);
-                    if (match) {
-                        jogo.nomePartida = `${match[1].trim()} v ${match[2].trim()}`;
-                    } else if (tit && !tit.toLowerCase().includes('radar') && !tit.toLowerCase().includes('futebol') && tit.length > 5) {
-                        jogo.nomePartida = tit.split('|')[0].trim();
-                    }
-                    // Se o título é genérico (só nome do site), mantém o fallback do ID abaixo
-                }
+                            let blocoChutes = wrapper.querySelector('[data-stat="shotsOnTarget"]');
+                            if (blocoChutes) { chC = parseInt(blocoChutes.querySelector('.home')?.textContent || '0') || 0; chF = parseInt(blocoChutes.querySelector('.away')?.textContent || '0') || 0; }
 
-                const todosOsFrames = await jogo.pageContext.frames();
-                let frameRadar = todosOsFrames.find(f => 
-                    f.url().includes('radarfutebol.xyz/scoreboards') || 
-                    f.name() === 'iframe-williamhill'
-                );
+                            let blocoFora = wrapper.querySelector('[data-stat="statsOffTarget"], [data-stat="shotsOffTarget"]');
+                            if (blocoFora) { chForaC = parseInt(blocoFora.querySelector('.home')?.textContent || '0') || 0; chForaF = parseInt(blocoFora.querySelector('.away')?.textContent || '0') || 0; }
 
-                let contextoAlvo = frameRadar ? frameRadar : jogo.pageContext;
-
-                // Extração baseada nos seletores estruturais estáveis
-                const r = await contextoAlvo.evaluate(() => {
-                    let tempoLocal = 0; let placarLocal = ''; let statusIntervalo = false; let statusEncerrado = false;
-                    let atqC = 0, atqF = 0, escC = 0, escF = 0, chC = 0, chF = 0, chForaC = 0, chForaF = 0, posseC = 50, posseF = 50;
-                    
-                    // 🔍 CAMADA 1: Seletor expandido para cobrir múltiplas versões do radar
-                    let spanRelogio = document.querySelector(
-                        '[data-push="clock"], .clockWrapper span, .match-clock, .match-time, ' +
-                        '[class*="clock"], [class*="Clock"], [class*="timer"], [class*="Timer"], ' +
-                        '.period-time, .live-time, .game-time, [data-testid="match-time"]'
-                    );
-                    if (spanRelogio && spanRelogio.textContent) {
-                        let textoCru = spanRelogio.textContent.trim().toLowerCase();
-                        
-                        // Detecção estrutural de fim de partida — palavras-chave expandidas
-                        if (textoCru.includes('fim') || textoCru.includes('ft') || textoCru.includes('encerrado') ||
-                            textoCru.includes('terminado') || textoCru.includes('encerrada') || textoCru.includes('terminada') ||
-                            textoCru.includes('full time') || textoCru.includes('fulltime') || textoCru.includes('final') ||
-                            textoCru.includes('resultado final') || textoCru.includes('ended') || textoCru.includes('finished') ||
-                            textoCru.includes('apito final')) {
-                            statusEncerrado = true;
-                        } else if (textoCru.includes('intervalo') || textoCru.includes('ht') || textoCru.includes('int')) {
-                            statusIntervalo = true; tempoLocal = 45; 
-                        } else {
-                            let matchHora = textoCru.match(/(\d{1,2}):(\d{2})/);
-                            if (matchHora) {
-                                let m = parseInt(matchHora[1]) || 0; let s = parseInt(matchHora[2]) || 0;
-                                tempoLocal = s > 0 ? m + 1 : m;
+                            let blocoPosse = wrapper.querySelector('[data-stat="possession"], [data-stat="BallPossession"]');
+                            if (blocoPosse) {
+                                posseC = parseInt(blocoPosse.querySelector('.home')?.textContent?.replace(/[^0-9]/g, '')) || 50;
+                                posseF = parseInt(blocoPosse.querySelector('.away')?.textContent?.replace(/[^0-9]/g, '')) || 50;
                             }
                         }
-                    }
+                        return { tempoLocal, placarLocal, statusIntervalo, statusEncerrado, atqC, atqF, escC, escF, chC, chF, chForaC, chForaF, posseC, posseF, momentumSrc };
+                    });
 
-                    // 🔍 CAMADA 2: Scan por badges/elementos de FT quando o relógio não é encontrado
-                    if (!statusEncerrado) {
-                        let ftBadge = document.querySelector(
-                            '.ft-badge, .status-ft, [class*="fulltime"], [class*="full-time"], ' +
-                            '[class*="finished"], [class*="ended"], [class*="status-ended"], ' +
-                            '[data-status="FT"], [data-status="ft"], [data-status="finished"]'
-                        );
-                        if (ftBadge) statusEncerrado = true;
-                    }
-
-                    // 🔍 CAMADA 3: Busca textual em elementos de status da página
-                    if (!statusEncerrado) {
-                        let statusEl = document.querySelector('.match-status, .game-status, .status-label, [class*="matchStatus"], [class*="gameStatus"]');
-                        if (statusEl) {
-                            let st = statusEl.textContent.trim().toLowerCase();
-                            if (st.includes('ft') || st.includes('fim') || st.includes('terminado') || st.includes('encerrado') || st.includes('final') || st.includes('finished') || st.includes('ended')) {
-                                statusEncerrado = true;
-                            }
-                        }
-                    }
-
-                    // --- Detecção robusta de 'Final da Partida' — procura pelo texto em toda a página
-                    // Alguns sites mostram a palavra "Final" fora do relógio; escaneamos o body para detectar imediatamente.
-                    try {
-                        const bodyText = (document.body && document.body.innerText) ? document.body.innerText.toLowerCase() : '';
-                        if (!statusEncerrado) {
-                            if (/\bfinal\s*(da|de)?\s*partida\b/.test(bodyText) || /\bfim\s*(da|do|de)?\s*jogo\b/.test(bodyText) || bodyText.includes('resultado final') || bodyText.includes('apito final')) {
-                                statusEncerrado = true;
-                            }
-                        }
-                    } catch (e) {}
-
-                    let nósTexto = Array.from(document.querySelectorAll('div, span, p, b')).map(el => el.textContent ? el.textContent.trim() : '');
-                    let matchPlacar = nósTexto.find(t => /^\d+\s*-\s*\d+$/.test(t));
-                    if (matchPlacar) placarLocal = matchPlacar.replace(/\s+/g, '');
-
-                    // Captura o src do iframe do gráfico Sofascore Momentum
-                    let momentumSrc = '';
-                    const iframeMomentum = document.querySelector('[id^="sofascore-momentum-"]');
-                    if (iframeMomentum) {
-                        momentumSrc = iframeMomentum.src || iframeMomentum.getAttribute('src') || '';
-                    }
-
-                    let wrapper = document.getElementById('stats_wrapper');
-                    if (wrapper) {
-                        // Seletor expandido: cobre variações de nome usadas por diferentes ligas/feeds do radar
-                        let blocoAtq = wrapper.querySelector(
-                            '[data-stat="dangerousAttacks"], [data-stat="dangerous_attacks"], ' +
-                            '[data-stat="dangerousattacks"], [data-stat="DangerousAttacks"], ' +
-                            '[data-stat="attacks"], [data-stat="Attacks"]'
-                        );
-                        if (blocoAtq) { atqC = parseInt(blocoAtq.querySelector('.home')?.textContent || '0') || 0; atqF = parseInt(blocoAtq.querySelector('.away')?.textContent || '0') || 0; }
-                        
-                        let blocoEsc = wrapper.querySelector('[data-stat="corners"]');
-                        if (blocoEsc) { escC = parseInt(blocoEsc.querySelector('.home')?.textContent || '0') || 0; escF = parseInt(blocoEsc.querySelector('.away')?.textContent || '0') || 0; }
-                        
-                        let blocoChutes = wrapper.querySelector('[data-stat="shotsOnTarget"]');
-                        if (blocoChutes) { chC = parseInt(blocoChutes.querySelector('.home')?.textContent || '0') || 0; chF = parseInt(blocoChutes.querySelector('.away')?.textContent || '0') || 0; }
-                        
-                        let blocoFora = wrapper.querySelector('[data-stat="statsOffTarget"], [data-stat="shotsOffTarget"]');
-                        if (blocoFora) { chForaC = parseInt(blocoFora.querySelector('.home')?.textContent || '0') || 0; chForaF = parseInt(blocoFora.querySelector('.away')?.textContent || '0') || 0; }
-
-                        let blocoPosse = wrapper.querySelector('[data-stat="possession"], [data-stat="BallPossession"]');
-                        if (blocoPosse) {
-                            posseC = parseInt(blocoPosse.querySelector('.home')?.textContent?.replace(/[^0-9]/g, '')) || 50;
-                            posseF = parseInt(blocoPosse.querySelector('.away')?.textContent?.replace(/[^0-9]/g, '')) || 50;
-                        }
-                    }
-                    return { tempoLocal, placarLocal, statusIntervalo, statusEncerrado, atqC, atqF, escC, escF, chC, chF, chForaC, chForaF, posseC, posseF, momentumSrc };
-                });
-
-             if (r) {
+                 if (r) {
                     // 🔍 CAMADA 4 (Node.js): Encerramento por estagnação de tempo ≥ 90min sem mudança (~30s)
                     if (!r.statusEncerrado && r.tempoLocal >= 90 && !r.statusIntervalo) {
                         if (r.tempoLocal === jogo.ultimoTempoRegistrado) {
@@ -586,6 +605,10 @@ async function iniciarRobo() {
         logger.atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo);
 
         renderizarPainelTerminal();
+    } catch (e) {
+        // Protege o loop principal contra exceções inesperadas — evita crash do processo
+        process.stderr.write(`[MAIN_LOOP] ❌ Erro no loop principal: ${e && e.message ? e.message : e}\n`);
+    }
     }, 5000);
 
     function abrirPromptNovaAba() {
@@ -607,6 +630,24 @@ async function iniciarRobo() {
                 const novaAba = await browser.newPage();
                 await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
                 await novaAba.goto(urlValida, { waitUntil: 'domcontentloaded' });
+                // immediately try to dismiss cookie/privacy modals in the newly opened page (interactive prompt flow)
+                try {
+                    const acceptSelectors = [
+                        'button[aria-label*="accept"]', 'button[aria-label*="Aceitar"]', 'button[aria-label*="Aceitar tudo"]',
+                        'button[class*="accept"]', 'button[class*="agree"]', 'button[class*="cookie"]', 'button[class*="consent"]',
+                        '#onetrust-accept-btn-handler', '.onetrust-accept-btn-handler', '.gdpr-accept', '.cookie-consent button',
+                        'button:contains("Aceitar")', 'button:contains("Accept")', 'button:contains("Concordo")'
+                    ];
+                    for (let sel of acceptSelectors) {
+                        try {
+                            const el = await novaAba.$(sel);
+                            if (el) {
+                                await novaAba.evaluate(s => { const e = document.querySelector(s); if (e) e.click(); }, sel);
+                                await novaAba.waitForTimeout(600);
+                            }
+                        } catch (e) { /* ignore per-selector errors */ }
+                    }
+                } catch (e) { /* non-fatal */ }
                 poolDeJogos.set(idJogo_unico, {
                     pageContext: novaAba, nomePartida: 'Carregando...', id: idJogo_unico, tempo: 0, placar: '0-0', noIntervalo: false, sincronizadoComFeed: false, momentumResetado2T: false,
                     ultimoTempoRegistrado: 0, ciclosSemMudancaTempo: 0,

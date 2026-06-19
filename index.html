@@ -62,9 +62,9 @@
         <div id="modal-analysis" onclick="closeAnalysis()" style="position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center;">
             <div onclick="event.stopPropagation()" style="max-width:760px; width:92%; background:#0b1220; border:1px solid #21262b; padding:16px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.7);">
                 <div class="flex justify-between items-center mb-3">
-                    <div class="text-2xs font-bold text-gray-200">🔬 Análise do Motor — Métodos</div>
-                    <div><button onclick="closeAnalysis()" class="text-2xs px-2 py-1 rounded bg-gray-800 border border-gray-700">Fechar</button></div>
-                </div>
+                    <div id="modal-analysis-title" class="text-2xs font-bold text-gray-200">🔬 Análise do Motor — Métodos</div>
+                     <div><button onclick="closeAnalysis()" class="text-2xs px-2 py-1 rounded bg-gray-800 border border-gray-700">Fechar</button></div>
+                 </div>
                 <div id="modal-analysis-content" style="max-height:60vh; overflow:auto;"></div>
             </div>
         </div>
@@ -193,7 +193,8 @@
                 // Indicador visual se a engine forneceu análise (mesmo que vazia)
                 let analysisIndicator = '';
                 if (jogo.engineAnalysis || jogo._engineAnalysis) {
-                    analysisIndicator = `<span class="ml-2 text-2xs px-2 py-0.5 rounded bg-emerald-500 text-black font-bold">🔬 Análise</span>`;
+                    // make the analysis badge clickable to open the modal for this jogo
+                    analysisIndicator = `<span class="ml-2 text-2xs px-2 py-0.5 rounded bg-emerald-500 text-black font-bold cursor-pointer" onclick="event.stopPropagation(); toggleAnalysis('${jogo.id}')">🔬 Análise</span>`;
                 }
 
                 const cardHtml = `
@@ -295,33 +296,19 @@
                     </div>
                 `;
                 gridJogos.innerHTML += cardHtml;
-                // adiciona botão de Analisar Métodos ao card (se houver análise no payload)
+                // cleanup: remove any text-only nodes that contain only a lone hyphen '-'
                 try {
-                    // pequeno timeout para garantir que o elemento foi inserido no DOM
                     setTimeout(() => {
                         const cardEl = gridJogos.querySelector(`.jogo-card[data-jogo-id="${jogo.id}"]`);
                         if (!cardEl) return;
-                        // evita duplicar o botão
-                        if (cardEl.querySelector('.btn-analisar-metodos')) return;
-                        const footer = document.createElement('div');
-                        footer.className = 'mt-3 flex justify-end';
-                        const btn = document.createElement('button');
-                        btn.className = 'btn-analisar-metodos text-2xs bg-gray-800 border border-gray-700 px-2 py-1 rounded hover:bg-gray-700';
-                        btn.textContent = '🔍 Analisar métodos';
-                        btn.onclick = (ev) => { ev.stopPropagation(); toggleAnalysis(jogo.id); };
-                        footer.appendChild(btn);
-                        cardEl.appendChild(footer);
-                        // cleanup: remove any text-only nodes that contain only a lone hyphen '-'
-                        try {
-                            const walker = document.createTreeWalker(cardEl, NodeFilter.SHOW_TEXT, null, false);
-                            const toRemove = [];
-                            while (walker.nextNode()) {
-                                const txt = walker.currentNode.nodeValue;
-                                if (typeof txt === 'string' && txt.trim() === '-') toRemove.push(walker.currentNode);
-                            }
-                            for (const n of toRemove) n.nodeValue = '';
-                        } catch (e) { /* non-fatal */ }
-                     }, 50);
+                        const walker = document.createTreeWalker(cardEl, NodeFilter.SHOW_TEXT, null, false);
+                        const toRemove = [];
+                        while (walker.nextNode()) {
+                            const txt = walker.currentNode.nodeValue;
+                            if (typeof txt === 'string' && txt.trim() === '-') toRemove.push(walker.currentNode);
+                        }
+                        for (const n of toRemove) n.nodeValue = '';
+                    }, 50);
                 } catch (e) { /* non-fatal */ }
             });
         };
@@ -342,52 +329,165 @@
             if (!modal || !content) return;
             // find jogo in latest payload
             const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
+            // debug: log raw analysis to browser console for inspection
+            try { console.log('[CLIENT] toggleAnalysis jogo.engineAnalysis:', jogo && jogo.engineAnalysis, 'jogo.tempo=', jogo && jogo.tempo); } catch(_){ }
             if (!jogo || !jogo.engineAnalysis) {
                 content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
+                try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
             } else {
-                content.innerHTML = renderEngineAnalysis(jogo.engineAnalysis);
+                content.innerHTML = renderEngineAnalysis(jogo, jogo.engineAnalysis);
             }
+            // Atualiza o título do modal com nome da partida, tempo atual e placar
+            try {
+                const titleEl = document.getElementById('modal-analysis-title');
+                if (titleEl && jogo) {
+                    const nome = jogo.nomePartida || '';
+                    const tempo = jogo.noIntervalo ? 'HT' : (jogo.tempo ? String(jogo.tempo) + "'" : '');
+                    const placar = jogo.placar || '';
+                    titleEl.textContent = `${nome}${tempo ? ' — ' + tempo : ''}${placar ? ' — ' + placar : ''}`;
+                }
+            } catch (e) { /* non-fatal */ }
             modal.classList.add('open');
         }
         function closeAnalysis() { document.getElementById('modal-analysis').classList.remove('open'); }
 
-        function renderEngineAnalysis(analysis) {
+        function renderEngineAnalysis(jogo, analysis) {
             // friendly mapping for criteria codes
             const friendly = {
                 emCooldown: 'Em cooldown após golo (aguardar)',
-                janelaTempo: 'Fora da janela de tempo necessária',
+                janelaTempo: '',
                 'difGols>1': 'Diferença de golos alta (não elegível)',
+                'difGols>0': 'Diferença de golos > 0 — equipa em vantagem (não elegível para gatilho)',
                 difGolsFora: 'Diferença de golos fora do intervalo permitido',
-                'ataquesCasa<10': 'Ataques Casa insuficientes (min 10)',
+                'ataquesCasa<10': 'Ataque da casa necessário (mín ≥ 10 ataques perigosos)',
                 'ataquesFora<10': 'Ataques Fora insuficientes (min 10)',
-                'chutesNoAlvoCasa<2': 'Chutes ao alvo Casa insuficientes (min 2)',
-                'chutesNoAlvoFora<2': 'Chutes ao alvo Fora insuficientes (min 2)',
+                'chutesNoAlvoCasa<2': 'Chute no alvo necessário (Casa) — mínimo 2 chutes ao alvo',
+                'chutesNoAlvoFora<2': 'Chute no alvo necessário (Fora) — mínimo 2 chutes ao alvo',
                 aceleracaoNegativa: 'Aceleração negativa (sem crescimento)',
-                qualidadeBaixa: 'Qualidade do ataque baixa',
-                difGolsFora: 'Placar fora dos requisitos do método'
+                qualidadeBaixa: 'Qualidade do ataque baixa (percentual)',
+                difGolsFora: 'Placar fora dos requisitos do método',
+                'chutesNoAlvoCasa+escanteios<3': 'Chute no alvo necessário (Casa) — chutes ao alvo + escanteios < 3',
+                'chutesNoAlvoFora+escanteios<3': 'Chutes ao alvo + escanteios (Fora) abaixo de 3',
+                'ataquesCasa<12': 'Ataques Casa abaixo do mínimo exigido (min 12) — insuficiente para pressionar',
+                'ataquesFora<12': 'Ataques Fora insuficientes (min 12)'
+            };
+
+            // Período de tempo (janela) por método — exibido no cabeçalho para clareza
+            const methodPeriods = {
+                'GATILHO_1T': "Janela: 15'–40'",
+                'GATILHO_1T_FORA': "Janela: 15'–40'",
+                'GATILHO_2T': "Janela: 46'–85'",
+                'GATILHO_2T_FORA': "Janela: 46'–85'",
+                'LAY_DRAW': "Janela: 25'–78'",
+                'LAY_0x0': "Janela: 20'–65'",
+                'LAY_0x1': "Janela: 20'–82'",
+                'LAY_1x0': "Janela: 20'–82'",
+                'LAY_1x2': "Janela: 20'–72'",
+                'LAY_2x1': "Janela: 20'–72'",
+                'LAY_1x1': "Janela: 30'–78'",
+                'FAVORITO_VENCE': "Janela: 15'–70'",
+                'FAVORITO_VIRA': "Janela: 20'–75'"
+            };
+
+            // Default expected criteria per method (used when analyzer reported empty missing array)
+            const defaultCriteria = {
+                'GATILHO_1T': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                'GATILHO_1T_FORA': ['janelaTempo', 'difGolsFora', 'ataquesFora<10', 'chutesNoAlvoFora<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                'GATILHO_2T': ['janelaTempo', 'ataquesCasa<12', 'chutesNoAlvoCasa+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                'GATILHO_2T_FORA': ['janelaTempo', 'ataquesFora<12', 'chutesNoAlvoFora+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                'LAY_DRAW': ['janelaTempo', 'empate', 'dominancia<2.0', 'apmDominante<0.8', 'atqDominante<8', 'qualidadeBaixa'],
+                'LAY_0x0': ['janelaTempo', 'gols!=0-0', 'pressao<1.0', 'atqCombinado<8', 'qualidadeBaixa'],
+                'LAY_0x1': ['janelaTempo', 'placar!=0-1', 'apmCasa<0.6', 'ataquesCasa<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
+                'LAY_1x0': ['janelaTempo', 'placar!=1-0', 'apmFora<0.6', 'ataquesFora<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
+                'LAY_1x2': ['janelaTempo', 'placar!=1-2', 'apmCasa<0.8', 'ataquesCasa<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
+                'LAY_2x1': ['janelaTempo', 'placar!=2-1', 'apmFora<0.8', 'ataquesFora<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
+                'LAY_1x1': ['janelaTempo', 'placar!=1-1', 'pressao<1.0', 'atqCombinado<10', 'chutesCombinados<2', 'ratio<1.8', 'qualidadeBaixa']
             };
 
             let html = '';
             html += '<div class="space-y-3">';
+            const rawTempo = jogo && jogo.tempo ? String(jogo.tempo) : '';
+            const minAtual = parseInt((rawTempo || '').replace(/[^0-9]/g, ''), 10) || 0;
+            const hideFirstHalf = minAtual > 45; // if in second half hide first-half-only methods
+            const firstHalfMethods = new Set(['GATILHO_1T','GATILHO_1T_FORA']);
             for (const method in analysis) {
+                if (hideFirstHalf && firstHalfMethods.has(method)) continue;
                 const entry = analysis[method] || { met: false, missing: [] };
                 const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
-                html += `<div class="p-2 bg-gray-950 border border-gray-800 rounded">`;
-                html += `<div class="flex justify-between items-center mb-1"><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${statusBadge}</div>`;
+                const periodLabel = methodPeriods[method] ? `<div class="text-2xs text-gray-400">${methodPeriods[method]}</div>` : '';
+                html += `<div class="flex justify-between items-center mb-1"><div><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${periodLabel}</div>${statusBadge}</div>`;
                 if (entry.met) {
-                    html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
-                } else {
-                    html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
-                    if (!entry.missing || entry.missing.length === 0) {
-                        html += `<li class="text-amber-300">Sem dados — verifique telemetria</li>`;
+                    // show which criteria were expected/satisfied when met (prefer explicit satisfied list)
+                    let satisfied = entry.satisfied && entry.satisfied.length ? entry.satisfied.slice() : (entry.expected ? entry.expected.slice() : []);
+                    // Ensure the time-window criterion appears in the satisfied list for clarity
+                    if (methodPeriods[method] && !satisfied.includes('janelaTempo')) satisfied.push('janelaTempo');
+                    if (satisfied.length === 0) {
+                        html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
                     } else {
-                        for (const crit of entry.missing) {
+                        html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+                        for (const crit of satisfied) {
                             const friendlyText = friendly[crit] || crit;
-                            html += `<li class="text-red-400">${friendlyText}</li>`;
+                            html += `<li class="text-emerald-300">${friendlyText}</li>`;
                         }
+                        html += '</ul>';
                     }
-                    html += '</ul>';
-                }
+                  } else {
+                      html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+                      // Show time-window as a satisfied item when the current minute falls inside the method period
+                      try {
+                          if (methodPeriods[method]) {
+                              const rangeMatch = String(methodPeriods[method]).match(/(\d+)'?\D*–\D*(\d+)'?/);
+                              if (rangeMatch) {
+                                  const startMin = parseInt(rangeMatch[1], 10) || 0;
+                                  const endMin = parseInt(rangeMatch[2], 10) || 0;
+                                  if (minAtual >= startMin && minAtual <= endMin) {
+                                      const friendlyText = friendly['janelaTempo'] || 'Dentro da janela necessária';
+                                      html += `<li class="text-emerald-300">${friendlyText}</li>`;
+                                  }
+                              }
+                          }
+                      } catch (e) { /* non-fatal */ }
+
+                      // If analyzer reported empty missing array, show expected/default criteria for clarity
+                      if (!entry.missing || entry.missing.length === 0) {
+                          const defs = (defaultCriteria[method] || []).slice();
+                          // Ensure the time-window criterion is shown among defaults
+                          if (methodPeriods[method] && !defs.includes('janelaTempo')) defs.unshift('janelaTempo');
+                          if (defs.length === 0) {
+                              html += `<li class="text-amber-300">Nenhum critério registrado — verifique telemetria/odds.</li>`;
+                          } else {
+                              for (const crit of defs) {
+                                  const friendlyText = friendly[crit] || crit;
+                                  html += `<li class="text-amber-300">${friendlyText}</li>`;
+                              }
+                          }
+                      } else {
+                            for (const critRaw of entry.missing) {
+                                // entry.missing may contain plain keys or objects with value info
+                                let crit = critRaw;
+                                let value = null;
+                                if (critRaw && typeof critRaw === 'object') {
+                                    crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
+                                    // try common value fields
+                                    value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
+                                }
+                                const friendlyText = friendly[crit] || crit;
+                                // format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
+                                let suffix = '';
+                                if (value !== null && value !== undefined && value !== '') {
+                                    if (crit === 'qualidadeBaixa' || String(crit).toLowerCase().includes('qualidade')) {
+                                        suffix = ` (valor: ${String(value)}%)`;
+                                    } else if (crit === 'janelaTempo') {
+                                        suffix = ` (valor: ${String(value)})`;
+                                    } else {
+                                        suffix = ` (valor: ${String(value)})`;
+                                    }
+                                }
+                                html += `<li class="text-red-400">${friendlyText}${suffix}</li>`;
+                            }
+                      }
+                      html += '</ul>';
+                  }
                 html += '</div>';
             }
             html += '</div>';
