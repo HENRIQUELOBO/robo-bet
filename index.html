@@ -60,12 +60,12 @@
         </div>
         <!-- Modal de análise de engine -->
         <div id="modal-analysis" onclick="closeAnalysis()" style="position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center;">
-            <div onclick="event.stopPropagation()" style="max-width:760px; width:92%; background:#0b1220; border:1px solid #21262b; padding:16px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.7);">
+            <div id="modal-analysis-box" onclick="event.stopPropagation()" style="max-width:760px; width:92%; background:#0b1220; border:1px solid #21262b; padding:16px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.7); position:relative;">
                 <div class="flex justify-between items-center mb-3">
                     <div id="modal-analysis-title" class="text-2xs font-bold text-gray-200">🔬 Análise do Motor — Métodos</div>
                      <div><button onclick="closeAnalysis()" class="text-2xs px-2 py-1 rounded bg-gray-800 border border-gray-700">Fechar</button></div>
                  </div>
-                <div id="modal-analysis-content" style="max-height:60vh; overflow:auto;"></div>
+                   <div id="modal-analysis-content" style="max-height:60vh; overflow:auto;"></div>
             </div>
         </div>
         <div id="grid-jogos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -348,8 +348,62 @@
                 }
             } catch (e) { /* non-fatal */ }
             modal.classList.add('open');
+            // reset draggable position when opening (centered)
+            const box = document.getElementById('modal-analysis-box');
+            const modalEl = document.getElementById('modal-analysis');
+            if (box && modalEl) {
+                // clear inline left/top to allow centering via modal flexbox
+                box.style.left = '';
+                box.style.top = '';
+                box.style.transform = '';
+                modalEl.style.alignItems = 'center';
+                modalEl.style.justifyContent = 'center';
+            }
         }
         function closeAnalysis() { document.getElementById('modal-analysis').classList.remove('open'); }
+
+        // Make the analysis modal draggable by its title
+        (function(){
+            const modal = document.getElementById('modal-analysis');
+            const box = document.getElementById('modal-analysis-box');
+            const title = document.getElementById('modal-analysis-title');
+            if (!modal || !box || !title) return;
+            title.style.cursor = 'move';
+            let dragging = false; let startX=0, startY=0, origLeft=0, origTop=0;
+
+            const onDown = (e)=>{
+                e.preventDefault();
+                dragging = true;
+                const rect = box.getBoundingClientRect();
+                origLeft = rect.left;
+                origTop = rect.top;
+                startX = (e.touches ? e.touches[0].clientX : e.clientX);
+                startY = (e.touches ? e.touches[0].clientY : e.clientY);
+                // switch modal to top-left anchored so we can position absolutely
+                modal.style.alignItems = 'flex-start';
+                modal.style.justifyContent = 'flex-start';
+                box.style.position = 'fixed';
+                box.style.margin = '0';
+                box.style.left = origLeft + 'px';
+                box.style.top = origTop + 'px';
+                box.style.transform = '';
+            };
+            const onMove = (e)=>{
+                if(!dragging) return;
+                const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+                const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+                const dx = cx - startX; const dy = cy - startY;
+                box.style.left = (origLeft + dx) + 'px';
+                box.style.top = (origTop + dy) + 'px';
+            };
+            const onUp = ()=>{ dragging = false; };
+            title.addEventListener('mousedown', onDown);
+            title.addEventListener('touchstart', onDown,{passive:false});
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('touchmove', onMove,{passive:false});
+            window.addEventListener('mouseup', onUp);
+            window.addEventListener('touchend', onUp);
+        })();
 
         function renderEngineAnalysis(jogo, analysis) {
             // friendly mapping for criteria codes
@@ -470,20 +524,49 @@
                                     crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
                                     // try common value fields
                                     value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
+                                } else if (typeof critRaw === 'string') {
+                                    // parse strings produced by engine_analysis (e.g. "chutesNoAlvoCasa<2 (valor: 1)")
+                                    const s = critRaw;
+                                    // try to extract (valor: X)
+                                    const m = s.match(/\(valor:\s*([^\)]+)\)/i);
+                                    if (m) {
+                                        value = m[1];
+                                    } else {
+                                        // try ": X" after a label
+                                        const m2 = s.match(/:\s*([0-9]+(?:\.[0-9]+)?)/);
+                                        if (m2) value = m2[1];
+                                    }
+                                    // derive crit key before any separator like ' - ', ' (' or ':'
+                                    crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
                                 }
                                 const friendlyText = friendly[crit] || crit;
                                 // format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
-                                let suffix = '';
-                                if (value !== null && value !== undefined && value !== '') {
-                                    if (crit === 'qualidadeBaixa' || String(crit).toLowerCase().includes('qualidade')) {
-                                        suffix = ` (valor: ${String(value)}%)`;
-                                    } else if (crit === 'janelaTempo') {
-                                        suffix = ` (valor: ${String(value)})`;
+                                let line = friendlyText;
+                                // Special formatting for chutesNoAlvoCasa<2: show required minimum (from criterion) and current value
+                                if (String(crit).startsWith('chutesNoAlvoCasa')) {
+                                    // try to extract numeric minimum from criterion like 'chutesNoAlvoCasa<2' or 'chutesNoAlvoCasa<=2'
+                                    const m = String(crit).match(/<\s*=?\s*(\d+)/);
+                                    const minReq = m ? m[1] : null;
+                                    const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
+                                    if (minReq) {
+                                        line = `Chute no alvo necessário (Casa) — mínimo ${minReq} chutes ao alvo (Atual: ${atual})`;
                                     } else {
-                                        suffix = ` (valor: ${String(value)})`;
+                                        line = `${friendlyText} (Atual: ${atual})`;
                                     }
+                                } else {
+                                    let suffix = '';
+                                    if (value !== null && value !== undefined && value !== '') {
+                                        if (crit === 'qualidadeBaixa' || String(crit).toLowerCase().includes('qualidade')) {
+                                            suffix = ` (valor: ${String(value)}%)`;
+                                        } else if (crit === 'janelaTempo') {
+                                            suffix = ` (valor: ${String(value)})`;
+                                        } else {
+                                            suffix = ` (valor: ${String(value)})`;
+                                        }
+                                    }
+                                    line = friendlyText + suffix;
                                 }
-                                html += `<li class="text-red-400">${friendlyText}${suffix}</li>`;
+                                html += `<li class="text-red-400">${line}</li>`;
                             }
                       }
                       html += '</ul>';
