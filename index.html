@@ -11,9 +11,13 @@
         .text-3xs { font-size: 0.65rem; } .text-2xs { font-size: 0.75rem; }
         #modal-momentum { display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); backdrop-filter:blur(4px); align-items:center; justify-content:center; }
         #modal-momentum.open { display:flex; }
+        #modal-analysis { display:none; position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center; }
+        #modal-analysis.open { display:flex; }
         #modal-momentum img { max-width:92vw; max-height:88vh; border-radius:12px; border:1px solid #374151; box-shadow:0 0 60px rgba(0,0,0,0.8); }
         .momentum-thumb { cursor:zoom-in; transition:opacity .2s; }
         .momentum-thumb:hover { opacity:.85; }
+        .engine-badge { transition: transform .12s ease; }
+        .engine-badge:hover { transform: translateY(-2px); }
     </style>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans min-h-screen">
@@ -22,6 +26,12 @@
             <div class="flex items-center space-x-3"><span class="text-2xl">🐺</span><h1 class="text-xl font-bold tracking-wider text-amber-500">LOBO QUANT PLATFORM</h1></div>
             <div class="flex items-center space-x-2 text-sm bg-gray-950 px-3 py-1.5 rounded-md border border-gray-800"><span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span><span class="text-gray-400 font-mono">VPS STREAM: ATIVO</span></div>
         </div>
+        <!-- Menu / Navegação -->
+        <nav class="flex items-center gap-3 mt-2">
+            <a href="/" class="text-sm font-medium px-3 py-1 rounded hover:bg-gray-800/60 text-amber-400">Home</a>
+            <a href="dashboard" class="text-sm font-medium px-3 py-1 rounded hover:bg-gray-800/60 text-gray-300">Dashboard</a>
+            <a href="#" onclick="window.location.reload();return false;" class="ml-auto text-sm px-3 py-1 rounded bg-gray-800/50 hover:bg-gray-800 text-gray-300">⟳ Atualizar</a>
+        </nav>
         <div class="flex items-center gap-3">
             <input
                 id="input-url"
@@ -48,6 +58,16 @@
                 <button onclick="fecharModal()" style="position:absolute;top:-14px;right:-14px;background:#1f2937;border:1px solid #374151;color:#9ca3af;border-radius:50%;width:30px;height:30px;font-size:18px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>
             </div>
         </div>
+        <!-- Modal de análise de engine -->
+        <div id="modal-analysis" onclick="closeAnalysis()" style="position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center;">
+            <div onclick="event.stopPropagation()" style="max-width:760px; width:92%; background:#0b1220; border:1px solid #21262b; padding:16px; border-radius:12px; box-shadow:0 10px 40px rgba(0,0,0,0.7);">
+                <div class="flex justify-between items-center mb-3">
+                    <div class="text-2xs font-bold text-gray-200">🔬 Análise do Motor — Métodos</div>
+                    <div><button onclick="closeAnalysis()" class="text-2xs px-2 py-1 rounded bg-gray-800 border border-gray-700">Fechar</button></div>
+                </div>
+                <div id="modal-analysis-content" style="max-height:60vh; overflow:auto;"></div>
+            </div>
+        </div>
         <div id="grid-jogos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div class="col-span-full text-center py-20 text-gray-500 font-mono border border-dashed border-gray-800 rounded-xl bg-gray-900/10">🔍 Conectando à esteira de dados assíncronos da VPS...</div>
         </div>
@@ -55,6 +75,7 @@
 
     <script>
         const VPS_IP = 'localhost';
+        let _latestJogos = [];
         const eventSource = new EventSource(`http://${VPS_IP}:3000/events`);
         const gridJogos = document.getElementById('grid-jogos');
 
@@ -118,6 +139,7 @@
 
         eventSource.onmessage = function(event) {
             const jogos = JSON.parse(event.data);
+            _latestJogos = jogos;
             if (jogos.length === 0) {
                 gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Cole uma URL acima para começar a monitorar.</div>`;
                 return;
@@ -125,6 +147,18 @@
             gridJogos.innerHTML = '';
 
             jogos.forEach(jogo => {
+                // sanitize incoming jogo object: remove literal '-' placeholders
+                function sanitizeJogo(obj) {
+                    if (!obj || typeof obj !== 'object') return obj;
+                    for (const k of Object.keys(obj)) {
+                        const v = obj[k];
+                        if (typeof v === 'string' && v.trim() === '-') obj[k] = '';
+                        else if (Array.isArray(v)) obj[k] = v.map(x => (typeof x === 'string' && x.trim() === '-') ? '' : x);
+                        else if (v && typeof v === 'object') sanitizeJogo(v);
+                    }
+                    return obj;
+                }
+                sanitizeJogo(jogo);
                 // Actualiza o cache de screenshot apenas quando o timestamp mudou
                 if (jogo.sofascoreMomentumImg && jogo.sofascoreMomentumTs) {
                     if (_imgCache[jogo.id]?.ts !== jogo.sofascoreMomentumTs) {
@@ -156,11 +190,20 @@
                     statusBadge = "bg-amber-500 text-gray-950 font-black";
                 }
 
+                // Indicador visual se a engine forneceu análise (mesmo que vazia)
+                let analysisIndicator = '';
+                if (jogo.engineAnalysis || jogo._engineAnalysis) {
+                    analysisIndicator = `<span class="ml-2 text-2xs px-2 py-0.5 rounded bg-emerald-500 text-black font-bold">🔬 Análise</span>`;
+                }
+
                 const cardHtml = `
-                    <div class="border rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 ${cardBorda}">
+                    <div class="border rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 ${cardBorda} jogo-card" data-jogo-id="${jogo.id}">
                         <div class="flex justify-between items-center mb-4">
                             <span class="font-mono text-xs font-black tracking-wider bg-gray-950 px-2.5 py-1 rounded-md text-amber-500 border border-gray-800">⏱️ ${jogo.noIntervalo ? 'HT' : jogo.tempo + "'"}</span>
-                            <span class="text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge}">${jogo.statusGatilho}</span>
+                            <div class="flex items-center">
+                                <span class="text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge}">${jogo.statusGatilho}</span>
+                                ${analysisIndicator}
+                            </div>
                         </div>
 
                         <div class="text-center my-1">
@@ -196,7 +239,7 @@
                                 </div>
                             </div>
                         </div>` : ''}
-
+-
                         <div class="mt-2">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
                                 <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60">CASA: <strong class="text-amber-500">${jogo.momentum.ataquesCasa} AP</strong></span>
@@ -208,7 +251,7 @@
                                 <div class="bg-gray-700 h-full transition-all duration-500 flex justify-start items-center pl-1" style="width: ${pctForaAPM}%">${pctForaAPM > 18 ? `<span class="text-3xs font-black text-white">${pctForaAPM}%</span>` : ''}</div>
                             </div>
                         </div>
-
+-
                         <div class="mt-2.5">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
                                 <span class="${posseCasa >= 60 ? 'text-red-400' : 'text-amber-500/90'} font-semibold">${posseCasa}%</span>
@@ -220,20 +263,20 @@
                                 <div class="h-full transition-all duration-500 ${posseFora >= 60 ? 'bg-red-500' : 'bg-gray-600'}" style="width: ${posseFora}%"></div>
                             </div>
                         </div>
-
+-
                         <div class="mt-3 bg-gray-950/40 border border-gray-900 rounded-xl p-2 text-2xs font-mono">
                             <div class="text-center font-bold text-gray-500 text-3xs tracking-wider border-b border-gray-900/50 pb-1 mb-1.5">📊 QUADRO 1: TELEMETRIA TOTAL (MACRO)</div>
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Atq. Perigosos:</span><span class="text-amber-500 font-bold">${jogo.atqPerigososCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.atqPerigososFora}</span></div>
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.chutesNoAlvoCasa}/${jogo.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.chutesNoAlvoFora}/${jogo.chutesParaForaFora}</span></div>
                             <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.escanteiosFora}</span></div>
                         </div>
-
+-
                         <div class="mt-2 bg-gray-950/20 border border-gray-900 rounded-xl p-2 text-2xs font-mono">
                             <div class="text-center font-bold text-gray-500 text-3xs tracking-wider border-b border-gray-900/50 pb-1 mb-1.5">🔬 QUADRO 2: MOMENTUM REAL (MICRO 10M)</div>
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.momentum.chutesNoAlvoCasa}/${jogo.momentum.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.chutesNoAlvoFora}/${jogo.momentum.chutesParaForaFora}</span></div>
                             <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.momentum.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.escanteiosFora}</span></div>
                         </div>
-
+-
                         ${jogo.id ? `
                         <div class="mt-2 rounded-xl overflow-hidden border border-gray-800/60 bg-gray-950/30">
                             <div class="text-center font-bold text-gray-500 text-3xs tracking-wider py-1 border-b border-gray-900/50">📈 SOFASCORE — MOMENTUM</div>
@@ -252,6 +295,34 @@
                     </div>
                 `;
                 gridJogos.innerHTML += cardHtml;
+                // adiciona botão de Analisar Métodos ao card (se houver análise no payload)
+                try {
+                    // pequeno timeout para garantir que o elemento foi inserido no DOM
+                    setTimeout(() => {
+                        const cardEl = gridJogos.querySelector(`.jogo-card[data-jogo-id="${jogo.id}"]`);
+                        if (!cardEl) return;
+                        // evita duplicar o botão
+                        if (cardEl.querySelector('.btn-analisar-metodos')) return;
+                        const footer = document.createElement('div');
+                        footer.className = 'mt-3 flex justify-end';
+                        const btn = document.createElement('button');
+                        btn.className = 'btn-analisar-metodos text-2xs bg-gray-800 border border-gray-700 px-2 py-1 rounded hover:bg-gray-700';
+                        btn.textContent = '🔍 Analisar métodos';
+                        btn.onclick = (ev) => { ev.stopPropagation(); toggleAnalysis(jogo.id); };
+                        footer.appendChild(btn);
+                        cardEl.appendChild(footer);
+                        // cleanup: remove any text-only nodes that contain only a lone hyphen '-'
+                        try {
+                            const walker = document.createTreeWalker(cardEl, NodeFilter.SHOW_TEXT, null, false);
+                            const toRemove = [];
+                            while (walker.nextNode()) {
+                                const txt = walker.currentNode.nodeValue;
+                                if (typeof txt === 'string' && txt.trim() === '-') toRemove.push(walker.currentNode);
+                            }
+                            for (const n of toRemove) n.nodeValue = '';
+                        } catch (e) { /* non-fatal */ }
+                     }, 50);
+                } catch (e) { /* non-fatal */ }
             });
         };
         eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
@@ -263,6 +334,128 @@
                 img.src = `http://${VPS_IP}:3000/screenshot/${jogoId}?t=${Date.now()}`;
             });
         }, 30000);
+
+        // --- Modal de Análise de Métodos (Engine) ---
+        function toggleAnalysis(jogoId) {
+            const modal = document.getElementById('modal-analysis');
+            const content = document.getElementById('modal-analysis-content');
+            if (!modal || !content) return;
+            // find jogo in latest payload
+            const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
+            if (!jogo || !jogo.engineAnalysis) {
+                content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
+            } else {
+                content.innerHTML = renderEngineAnalysis(jogo.engineAnalysis);
+            }
+            modal.classList.add('open');
+        }
+        function closeAnalysis() { document.getElementById('modal-analysis').classList.remove('open'); }
+
+        function renderEngineAnalysis(analysis) {
+            // friendly mapping for criteria codes
+            const friendly = {
+                emCooldown: 'Em cooldown após golo (aguardar)',
+                janelaTempo: 'Fora da janela de tempo necessária',
+                'difGols>1': 'Diferença de golos alta (não elegível)',
+                difGolsFora: 'Diferença de golos fora do intervalo permitido',
+                'ataquesCasa<10': 'Ataques Casa insuficientes (min 10)',
+                'ataquesFora<10': 'Ataques Fora insuficientes (min 10)',
+                'chutesNoAlvoCasa<2': 'Chutes ao alvo Casa insuficientes (min 2)',
+                'chutesNoAlvoFora<2': 'Chutes ao alvo Fora insuficientes (min 2)',
+                aceleracaoNegativa: 'Aceleração negativa (sem crescimento)',
+                qualidadeBaixa: 'Qualidade do ataque baixa',
+                difGolsFora: 'Placar fora dos requisitos do método'
+            };
+
+            let html = '';
+            html += '<div class="space-y-3">';
+            for (const method in analysis) {
+                const entry = analysis[method] || { met: false, missing: [] };
+                const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
+                html += `<div class="p-2 bg-gray-950 border border-gray-800 rounded">`;
+                html += `<div class="flex justify-between items-center mb-1"><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${statusBadge}</div>`;
+                if (entry.met) {
+                    html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
+                } else {
+                    html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+                    if (!entry.missing || entry.missing.length === 0) {
+                        html += `<li class="text-amber-300">Sem dados — verifique telemetria</li>`;
+                    } else {
+                        for (const crit of entry.missing) {
+                            const friendlyText = friendly[crit] || crit;
+                            html += `<li class="text-red-400">${friendlyText}</li>`;
+                        }
+                    }
+                    html += '</ul>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+            return html;
+        }
     </script>
+
+    <!-- Adiciona badge visual quando engineAnalysis estiver presente em jogos -->
+    <script>
+        // Função resiliente para injetar badge de análise nos cards já renderizados
+        function updateAnalysisBadges(listaJogos) {
+            try {
+                listaJogos = listaJogos || window._latestJogos || [];
+                listaJogos.forEach(j => {
+                    const id = String(j.id || j.matchId || j.gameId || '');
+                    if (!id) return;
+                    // tenta múltiplos seletores comuns de cards
+                    const selectors = [
+                        `.jogo-card[data-id="${id}"]`,
+                        `#card-${id}`,
+                        `[data-jogo-id="${id}"]`,
+                        `div[data-id="${id}"]`,
+                    ];
+                    let el = null;
+                    for (const s of selectors) {
+                        el = document.querySelector(s);
+                        if (el) break;
+                    }
+                    if (!el) return;
+                    // procura cabeçalho para colocar badge; se não existir usa el
+                    const header = el.querySelector('.card-header') || el.querySelector('.header') || el;
+                    // verifica se já temos badge
+                    if (header.querySelector('.engine-badge')) return;
+                    if (j.engineAnalysis && Object.keys(j.engineAnalysis).length > 0) {
+                        const span = document.createElement('span');
+                        span.className = 'engine-badge';
+                        span.title = 'Análise do motor disponível — clique para ver detalhes';
+                        span.textContent = '🔬 Análise disponível';
+                        // estilo inline para compatibilidade rápida
+                        span.style.cssText = 'display:inline-block;margin-left:8px;padding:4px 8px;background:#0f1724;color:#b7f5d0;border-radius:12px;font-size:12px;font-weight:600;cursor:pointer;';
+                        span.addEventListener('click', function (ev) {
+                            ev.stopPropagation();
+                            // tenta extrair id e abrir modal existente
+                            const jogoId = id;
+                            if (typeof toggleAnalysis === 'function') toggleAnalysis(jogoId);
+                        });
+                        header.appendChild(span);
+                    }
+                });
+            } catch (e) { console.error('updateAnalysisBadges error', e); }
+        }
+
+        // Hook para ser chamado sempre que SSE atualiza _latestJogos
+        (function () {
+            const origHandle = window.__sseHandleLatestJogos;
+            // se o código já definiu um hook, tenta preservar
+            window.__sseHandleLatestJogos = function (listaJogos) {
+                try { updateAnalysisBadges(listaJogos); } catch (e) {}
+                if (typeof origHandle === 'function') origHandle(listaJogos);
+            };
+            // também tenta atualizar imediatamente se já houver jogos
+            setTimeout(() => updateAnalysisBadges(window._latestJogos || []), 500);
+        })();
+    </script>
+
+    <style>
+        .engine-badge { transition: transform .12s ease; }
+        .engine-badge:hover { transform: translateY(-2px); }
+    </style>
 </body>
 </html>

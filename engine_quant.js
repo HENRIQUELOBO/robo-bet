@@ -35,9 +35,16 @@ function parsePlacar(placar) {
     return { gC: p[0] || 0, gF: p[1] || 0 };
 }
 
+const { createAnalyzer } = require('./engine_analysis');
+
 function processarMotorDeRegras(idJogo, jogo, alertas) {
     const minAtual = jogo.tempo;
-
+    // objecto de análise por método (visível no front-end via logger)
+    const analyzer = createAnalyzer();
+    // Anexa a referência do objeto de análise ao jogo desde já (é o mesmo objeto mutável)
+    try { jogo._engineAnalysis = analyzer.get(); } catch (e) { /* non-fatal */ }
+    // debug: confirmar que a função está a ser executada para este jogo
+    try { console.log(`[ENGINE] processarMotorDeRegras id=${idJogo} tempo=${minAtual} nome="${jogo.nomePartida || ''}"`); } catch(e){}
     // 🔬 TRAVA ANTI-FANTASMA DO INTERVALO
     if (jogo.noIntervalo && !jogo.momentumResetado2T) {
         jogo.historicoAtqCasa = []; jogo.historicoAtqFora = [];
@@ -139,6 +146,22 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_1T");
             }
         }
+        analyzer.init('GATILHO_1T');
+        if (emCooldown) analyzer.addMissing('GATILHO_1T', 'emCooldown');
+        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T', 'janelaTempo');
+        if (difGols > 1) analyzer.addMissing('GATILHO_1T', 'difGols>1');
+        if (jogo.momentum.ataquesCasa < 10) analyzer.addMissing('GATILHO_1T', 'ataquesCasa<10');
+        if (jogo.momentum.chutesNoAlvoCasa < 2) analyzer.addMissing('GATILHO_1T', 'chutesNoAlvoCasa<2');
+        if (acCasa < 0) analyzer.addMissing('GATILHO_1T', 'aceleracaoNegativa');
+        if (qualCasa < 0.15) analyzer.addMissing('GATILHO_1T', 'qualidadeBaixa');
+        if (!emCooldown && minAtual >= 15 && minAtual <= 40 && !alertas.golIminente1T && analyzer.get()['GATILHO_1T'].missing.length === 0) {
+            alertas.golIminente1T = true;
+            analyzer.setMet('GATILHO_1T');
+            const ctx = difGols < 0 ? '🔴 Casa a perder' : difGols === 0 ? '🟡 Empate' : '🟢 Casa +1';
+            const posse = jogo.posseBolaCasa ? ` | Posse Casa: ${jogo.posseBolaCasa}%` : '';
+            const msg = `🔥 *WOLF QUANT - GATILHO 1T CASA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx}${posse}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa > 0 ? '+' : ''}${acCasa} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Chutes Alvo: ${jogo.momentum.chutesNoAlvoCasa} | Qualidade: ${(qualCasa*100).toFixed(0)}%`;
+            require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_1T");
+        }
 
         // ─────────────────────────────────────────────────────────────────
         // MÉTODO 2 — GATILHO 1T FORA: Fora pressiona no 1ºT (15'–40')
@@ -156,6 +179,23 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_1T_FORA");
             }
         }
+        analyzer.init('GATILHO_1T_FORA');
+        if (emCooldown) analyzer.addMissing('GATILHO_1T_FORA', 'emCooldown');
+        if (minAtual < 15 || minAtual > 40) analyzer.addMissing('GATILHO_1T_FORA', 'janelaTempo');
+        if (difGols < -1 || difGols > 3) analyzer.addMissing('GATILHO_1T_FORA', 'difGolsFora');
+        if (jogo.momentum.ataquesFora < 10) analyzer.addMissing('GATILHO_1T_FORA', 'ataquesFora<10');
+        if (jogo.momentum.chutesNoAlvoFora < 2) analyzer.addMissing('GATILHO_1T_FORA', 'chutesNoAlvoFora<2');
+        if (acFora < 0) analyzer.addMissing('GATILHO_1T_FORA', 'aceleracaoNegativa');
+        if (qualFora < 0.15) analyzer.addMissing('GATILHO_1T_FORA', 'qualidadeBaixa');
+        if (!emCooldown && minAtual >= 15 && minAtual <= 40 && !alertas.golIminente1TFora && analyzer.get()['GATILHO_1T_FORA'].missing.length === 0) {
+            alertas.golIminente1TFora = true;
+            analyzer.setMet('GATILHO_1T_FORA');
+            const ctx = difGols > 0 ? '🔴 Fora a perder' : difGols === 0 ? '🟡 Empate' : '🟢 Fora +1';
+            const posse = jogo.posseBolaFora ? ` | Posse Fora: ${jogo.posseBolaFora}%` : '';
+            const msg = `🔥 *WOLF QUANT - GATILHO 1T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx}${posse}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Chutes Alvo: ${jogo.momentum.chutesNoAlvoFora} | Qualidade: ${(qualFora*100).toFixed(0)}%`;
+            require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_1T_FORA");
+        }
+        // (analysis will be attached after all methods are evaluated)
 
         // ─────────────────────────────────────────────────────────────────
         // MÉTODO 3 — GATILHO 2T CASA: Casa pressiona no 2ºT (58'–85')

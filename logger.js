@@ -115,26 +115,81 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
             betfairMarketId: jogo.betfairMarketId || null,
             sofascoreMomentumUrl: jogo.sofascoreMomentumUrl || null,
             sofascoreMomentumImg: jogo.sofascoreMomentumImg || null
+            ,
+            engineAnalysis: jogo._engineAnalysis || null
         });
     }
     dadosUltimosJogos = listaJogos;
+    // sanitize payload: replace any string value that is exactly '-' (or ' - ') with empty string
+    function sanitizePayload(obj) {
+        if (!obj || typeof obj !== 'object') return obj;
+        for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            if (typeof v === 'string' && v.trim() === '-') obj[k] = '';
+            else if (Array.isArray(v)) obj[k] = v.map(x => (typeof x === 'string' && x.trim() === '-') ? '' : x);
+            else if (v && typeof v === 'object') sanitizePayload(v);
+        }
+        return obj;
+    }
+    listaJogos.forEach(j => sanitizePayload(j));
+    // debug: quantos jogos possuem engineAnalysis antes de enviar (temporário)
+    try {
+        const withAnalysis = listaJogos.filter(j => j.engineAnalysis != null).length;
+        console.log(`[LOGGER] Enviando ${listaJogos.length} jogos via SSE — engineAnalysis presente em ${withAnalysis}`);
+    } catch (e) { /* ignore logging errors */ }
     clientesSSE.forEach(res => { res.write(`data: ${JSON.stringify(listaJogos)}\n\n`); });
 }
 
+// Tornar escrita no CSV assíncrona para não bloquear o loop principal
 async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
-    if (config.TELEGRAM_TOKEN === 'SEU_BOT_TOKEN_AQUI') return;
+    const fsp = fs.promises;
+    // Ensure header exists (create file with header if missing) using async ops
     try {
-        await axios.post(`https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`, { chat_id: config.TELEGRAM_CHAT_ID, text: mensagem, parse_mode: 'Markdown' });
-        if (!fs.existsSync(CAMINHO_LOG_CSV)) {
-            fs.writeFileSync(CAMINHO_LOG_CSV, "DATA_HORA;PARTIDA;METODO;TEMPO_DISPARO;PLACAR_MOMENTO;APM_MOMENTO;XG_MAX_MOMENTO;QUALIDADE_SINAL;\n", 'utf8');
+        try { await fsp.access(CAMINHO_LOG_CSV); } catch (err) {
+            // file doesn't exist — create with header (including STATUS column for future use)
+            const header = "DATA_HORA;PARTIDA;METODO;TEMPO_DISPARO;PLACAR_MOMENTO;APM_MOMENTO;XG_MAX_MOMENTO;QUALIDADE_SINAL;STATUS;ID;\n";
+            await fsp.writeFile(CAMINHO_LOG_CSV, header, 'utf8');
         }
+
         // Extrai o valor de Qualidade da mensagem (ex: "Qualidade: 45%" ou "Qualidade máx: 38%")
-        const matchQual = mensagem.match(/Qualidade(?:\s+m[aá]x)?:\s*(\d+)%/i);
+        const matchQual = mensagem.match(/Qualidade(?:\\s+m[aá]x)?:\\s*(\\d+)%/i);
         const qualidadeSinal = matchQual ? `${matchQual[1]}%` : 'N/D';
         const { data: dataHoje, hora: horaAgora } = _formatarDataHora();
-        const linhaLog = `${dataHoje} ${horaAgora};${jogo.nomePartida.replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${jogo.placar};${jogo.pressao.toFixed(2)};${Math.max(jogo.xgCasa, jogo.xgFora).toFixed(2)};${qualidadeSinal};\n`;
-        fs.appendFileSync(CAMINHO_LOG_CSV, linhaLog, 'utf8');
-    } catch (e) {}
+        const signalId = `sig_${Date.now()}_${Math.floor(Math.random()*100000)}`;
+        const linhaLog = `${dataHoje} ${horaAgora};${jogo.nomePartida.replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${jogo.placar};${jogo.pressao.toFixed(2)};${Math.max(jogo.xgCasa, jogo.xgFora).toFixed(2)};${qualidadeSinal};PENDING;${signalId};\n`;
+        // append asynchronously (await to catch errors)
+        try {
+            await fsp.appendFile(CAMINHO_LOG_CSV, linhaLog, 'utf8');
+        } catch (appendErr) {
+            // Fallback: try synchronous append to avoid silent loss
+            try {
+                fs.appendFileSync(CAMINHO_LOG_CSV, linhaLog, 'utf8');
+            } catch (syncErr) {
+                throw syncErr; // will be caught by outer catch
+            }
+        }
+
+        // Notify monitor in-memory (non-blocking) so it can start observing this signal
+        try {
+            const monitor = require('./monitor_results');
+            if (monitor && typeof monitor.registrarSinalPendente === 'function') {
+                monitor.registrarSinalPendente({ id: signalId, jogoId: idJogo, metodo: metodoAtivado, tempoEmissao: jogo.tempo, placar: jogo.placar });
+            }
+        } catch (ignore) {
+            // ignore if monitor not present or errors during require
+        }
+    } catch (e) {
+        process.stderr.write(`[LOGGER ERROR] enviarAlertaTelegram (local write): ${e.message}\n`);
+    }
+
+    // If Telegram token is configured, also send the message to Telegram (best-effort)
+    if (config.TELEGRAM_TOKEN && config.TELEGRAM_TOKEN !== 'SEU_BOT_TOKEN_AQUI') {
+        try {
+            await axios.post(`https://api.telegram.org/bot${config.TELEGRAM_TOKEN}/sendMessage`, { chat_id: config.TELEGRAM_CHAT_ID, text: mensagem, parse_mode: 'Markdown' });
+        } catch (e) {
+            process.stderr.write(`[LOGGER ERROR] enviarAlertaTelegram (telegram): ${e.message}\n`);
+        }
+    }
 }
 
 function registrarScreenshotMomentum(jogoId, base64Img) {

@@ -2,7 +2,7 @@ const puppeteer = require('puppeteer');
 
 async function rodarMinerador() {
     console.log('[Scout] Iniciando Robô Sentinela...');
-    const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+    const browser = await puppeteer.launch({ headless: false, args: ['--no-sandbox'] });
     const page = await browser.newPage();
     const processados = new Set();
 
@@ -60,6 +60,10 @@ async function rodarMinerador() {
                             processados.add(jogoId);
                             // Remove da grade para não ver mais
                             await elementoRadar.evaluate(el => {
+                                // Normalmente o .radar está dentro de uma <tr> — remove a <tr> inteira
+                                const tr = el.closest('tr');
+                                if (tr) { tr.remove(); return; }
+                                // Se estrutura diferente, tenta remover o contêiner mais próximo que contém o radar
                                 const container = el.closest('div.shadow.overflow-hidden');
                                 if (container) container.remove();
                             });

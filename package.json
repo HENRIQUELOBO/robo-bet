@@ -3,5 +3,11 @@
     "axios": "^1.17.0",
     "node-fetch": "^2.7.0",
     "puppeteer": "^24.43.1"
+  },
+  "devDependencies": {
+    "jest": "^29.6.1"
+  },
+  "scripts": {
+    "test": "jest"
   }
 }

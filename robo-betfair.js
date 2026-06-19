@@ -81,15 +81,39 @@ async function iniciarRobo() {
     setInterval(async () => {
         for (let [idJogo, jogo] of poolDeJogos.entries()) {
             try {
-                // Seletor específico pelo ID do jogo, depois fallback genérico
+                // Se o jogo está no intervalo, pulamos o fluxo de screenshot para evitar prints inúteis
+                if (jogo.noIntervalo) {
+                    process.stdout.write(`[MOMENTUM] ⏸️ ${jogo.nomePartida}: jogo em intervalo — screenshot pausado\n`);
+                    continue;
+                }
+                // Se o jogo ainda não sincronizou com o feed (sem dados estáveis), evita screenshots
+                if (!jogo.sincronizadoComFeed || !jogo.tempo || jogo.tempo <= 0) {
+                    process.stdout.write(`[MOMENTUM] ⏳ ${jogo.nomePartida}: sem dados estáveis ainda — screenshot adiado\n`);
+                    continue;
+                }
+
+                // Procurar estritamente pelo iframe do jogo atual:
+                // 1) iframe com id exato `sofascore-momentum-<idJogo>`;
+                // 2) se não houver id exato, procurar iframe cujo `src` contenha o id (muitas vezes o id aparece na querystring);
+                // Não usar fallback genérico que pega qualquer outro jogo na página.
                 let iframeEl = await jogo.pageContext.$(`#sofascore-momentum-${idJogo}`);
-                if (!iframeEl) iframeEl = await jogo.pageContext.$('[id^="sofascore-momentum-"]');
+                if (!iframeEl) {
+                    // procura por iframe cujo src contenha o idJogo
+                    const frames = await jogo.pageContext.$$('iframe');
+                    for (let f of frames) {
+                        try {
+                            const srcHandle = await f.getProperty('src');
+                            const src = srcHandle ? await srcHandle.jsonValue() : null;
+                            if (src && String(src).includes(String(idJogo))) { iframeEl = f; break; }
+                        } catch (e) { /* ignora erros ao ler src */ }
+                    }
+                }
 
                 if (!iframeEl) {
                     const lista = await jogo.pageContext.$$eval('iframe', els =>
                         els.map(e => e.id || e.name || e.src).filter(Boolean)
                     );
-                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: iframe não encontrado. IDs na página: ${JSON.stringify(lista)}\n`);
+                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: iframe específico sofascore-momentum-${idJogo} não encontrado. IDs/src na página: ${JSON.stringify(lista)}\n`);
                     continue;
                 }
 
@@ -99,6 +123,61 @@ async function iniciarRobo() {
                 // Scroll até ao elemento e aguarda render completo
                 await iframeEl.evaluate(el => el.scrollIntoView({ block: 'nearest' }));
                 await new Promise(r => setTimeout(r, 1200));
+
+                // --- Aceitar possíveis termos de privacidade / cookie consent antes do screenshot
+                // Muitos sites mostram um modal/alerta que fica sobreposto ao iframe e aparece no print.
+                // Tentamos clicar em botões comuns de aceitação tanto no contexto da página quanto dentro do iframe (se acessível).
+                try {
+                    const acceptSelectors = [
+                        'button[aria-label*="accept"]',
+                        'button[aria-label*="Aceitar"]',
+                        'button[aria-label*="Aceitar tudo"]',
+                        'button[class*="accept"]',
+                        'button[class*="agree"]',
+                        'button[class*="cookie"]',
+                        'button[class*="consent"]',
+                        'button:contains("Aceitar")',
+                        'button:contains("Accept")',
+                        'button:contains("Concordo")',
+                        '.cookie-consent button',
+                        '.gdpr-accept',
+                        '#onetrust-accept-btn-handler',
+                        '.onetrust-accept-btn-handler'
+                    ];
+
+                    // Função para tentar clicar selectors no contexto da page
+                    const tryClickOnPage = async (page, selectors) => {
+                        for (let sel of selectors) {
+                            try {
+                                const exists = await page.$(sel);
+                                if (exists) {
+                                    await page.evaluate(s => {
+                                        const el = document.querySelector(s);
+                                        if (el) { el.click(); }
+                                    }, sel);
+                                    await new Promise(r => setTimeout(r, 600));
+                                    return true;
+                                }
+                            } catch (e) { /* ignora */ }
+                        }
+                        return false;
+                    };
+
+                    // Tenta no contexto da página principal
+                    await tryClickOnPage(jogo.pageContext, acceptSelectors).catch(() => {});
+
+                    // Tenta também dentro do iframe caso seja acessível (cross-origin pode falhar)
+                    try {
+                        const frame = await iframeEl.contentFrame();
+                        if (frame) {
+                            await tryClickOnPage(frame, acceptSelectors).catch(() => {});
+                        }
+                    } catch (e) {
+                        // Se não for possível acessar o frame, ignora (cross-origin)
+                    }
+                } catch (e) {
+                    // Não fatal — seguimos para o screenshot mesmo que não tenha sido possível clicar
+                }
 
                 const box = await iframeEl.boundingBox();
                 if (!box || box.width < 10 || box.height < 10) {
@@ -461,8 +540,28 @@ async function iniciarRobo() {
                 }
 
                 // Invoca as validações do Motor Matemático e escrita em disco local
-                engine.processarMotorDeRegras(idJogo, jogo, alertasDisparadosPorJogo.get(idJogo));
-                logger.registrarTelemetriaContinua(jogo);
+                try {
+                    const alertasDoJogo = alertasDisparadosPorJogo.get(idJogo);
+                    // Uso de process.stdout.write para garantir saída imediata no console
+                    process.stdout.write(`[ENGINE_CALL] Invocando processarMotorDeRegras id=${idJogo} tempo=${jogo.tempo} placar=${jogo.placar} nome="${jogo.nomePartida || ''}"\n`);
+
+                    // Chama o engine; suporta funções sync ou async
+                    await Promise.resolve(engine.processarMotorDeRegras(idJogo, jogo, alertasDoJogo));
+
+                    // Verifica se o engine populou a análise e loga informações resumidas
+                    let analyzerInfo = 'nenhum';
+                    try {
+                        const ana = jogo._engineAnalysis;
+                        if (ana && typeof ana === 'object') {
+                            const keys = Object.keys(ana || {});
+                            analyzerInfo = `${keys.length} métodos: ${keys.join(',')}`;
+                        }
+                    } catch (e) { analyzerInfo = 'erro ao ler analyzer'; }
+
+                    process.stdout.write(`[ENGINE_CALL] Retorno processarMotorDeRegras id=${idJogo} tempo=${jogo.tempo} -- alertas ativos: ${Object.keys(alertasDoJogo || {}).filter(k=>alertasDoJogo[k]).join(',') || 'nenhum'} -- analyzer: ${analyzerInfo}\n`);
+                 } catch (e) {
+                    process.stderr.write(`[ENGINE_CALL] ERRO processarMotorDeRegras id=${idJogo} -> ${e && e.message ? e.message : e}\n`);
+                 }
 
                 // 🎰 ODDS API: Chamada ÚNICA por jogo
                 // Usada pelos métodos FAVORITO VENCE e FAVORITO VIRA para identificar
@@ -503,13 +602,11 @@ async function iniciarRobo() {
             if (!urlValida.startsWith('http')) return;
 
             const idJogo_unico = String(urlValida.split('/').pop() || Date.now());
-            if (poolDeJogos.has(idJogo_unico)) return;
-
+            if (poolDeJogos.has(idJogo_unico)) return { ok: false, erro: 'Jogo já iniciado' };
             try {
                 const novaAba = await browser.newPage();
                 await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
                 await novaAba.goto(urlValida, { waitUntil: 'domcontentloaded' });
-
                 poolDeJogos.set(idJogo_unico, {
                     pageContext: novaAba, nomePartida: 'Carregando...', id: idJogo_unico, tempo: 0, placar: '0-0', noIntervalo: false, sincronizadoComFeed: false, momentumResetado2T: false,
                     ultimoTempoRegistrado: 0, ciclosSemMudancaTempo: 0,
@@ -521,7 +618,9 @@ async function iniciarRobo() {
                     _encerrando: false
                 });
                 alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
-            } catch (err) {}
+            } catch (err) {
+                return { ok: false, erro: err && err.message ? err.message : 'Erro ao abrir nova aba' };
+            }
         });
     }
 
@@ -533,5 +632,6 @@ async function iniciarRobo() {
 }
 
 iniciarRobo().catch(err => console.error(err));
+
 
 
