@@ -1,12 +1,9 @@
-// robo-betfair.js
 const puppeteer = require('puppeteer');
 const readline  = require('readline');
-const path      = require('path');
 
 // Injeção dos componentes modulares do sistema Lobo Dev
 const engine   = require('./engine_quant');
 const logger   = require('./logger');
-const betfair  = require('./betfair');
 
 const poolDeJogos = new Map();
 const alertasDisparadosPorJogo = new Map();
@@ -47,11 +44,8 @@ function renderizarPainelTerminal() {
             else if (alertas && alertas.golIminente1T)     statusLinha = "🔥 GATILHO 1T!";
             else if (alertas && alertas.golIminente1TFora) statusLinha = "🔥 GATILHO 1T FORA";
             else if (alertas && alertas.layDraw)           statusLinha = "🏆 LAY DRAW";
-            else if (alertas && alertas.lay11)             statusLinha = "🎯 LAY 1x1";
             else if (alertas && alertas.lay01)             statusLinha = "⚡ LAY 0x1";
             else if (alertas && alertas.lay10)             statusLinha = "⚡ LAY 1x0";
-            else if (alertas && alertas.lay12)             statusLinha = "⚡ LAY 1x2";
-            else if (alertas && alertas.lay21)             statusLinha = "⚡ LAY 2x1";
             else if (alertas && alertas.lay00)             statusLinha = "🔵 LAY 0x0";
         }
 
@@ -260,7 +254,8 @@ async function iniciarRobo() {
                 historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: [],
                 _encerrando: false
             });
-            alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
+            // Removed keys for LAY 1x1, LAY 1x2, LAY 2x1
+            alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, favoritoVence: false, favoritoVira: false });
             return { ok: true, id: idJogo_unico };
         } catch (err) {
             return { ok: false, erro: err && err.message ? err.message : 'Erro ao abrir nova aba' };
@@ -583,23 +578,6 @@ async function iniciarRobo() {
                  } catch (e) {
                     process.stderr.write(`[ENGINE_CALL] ERRO processarMotorDeRegras id=${idJogo} -> ${e && e.message ? e.message : e}\n`);
                  }
-
-                // 🎰 ODDS API: Chamada ÚNICA por jogo
-                // Usada pelos métodos FAVORITO VENCE e FAVORITO VIRA para identificar
-                // qual equipa o mercado considera favorita. Não atualiza durante o jogo.
-                if (!jogo.betfairBuscado && jogo.nomePartida && !jogo.nomePartida.includes('Carregando')) {
-                    jogo.betfairBuscado = true;
-                    const nomeCasa = jogo.nomePartida.split(' v ')[0]?.trim() || '';
-                    const nomeFora = jogo.nomePartida.split(' v ')[1]?.trim() || '';
-                    betfair.buscarMercadoPartida(nomeCasa, nomeFora).then(async mercado => {
-                        if (mercado) {
-                            jogo.betfairMarketId = mercado;
-                            const odds = await betfair.buscarOddsAtuais(mercado);
-                            if (odds) jogo.betfairOdds = odds; // Guardado 1 vez, nunca mais atualizado
-                        }
-                    }).catch(() => {});
-                }
-
             } catch (err) {}
         }
 
@@ -660,7 +638,8 @@ async function iniciarRobo() {
                     historicoAtqCasa: [], historicoAtqFora: [], historicoEscCasa: [], historicoEscFora: [], historicoChAlvoCasa: [], historicoChAlvoFora: [], historicoChForaCasa: [], historicoChForaFora: [],
                     _encerrando: false
                 });
-                alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, lay11: false, lay12: false, lay21: false, favoritoVence: false, favoritoVira: false });
+                // Removed keys for LAY 1x1, LAY 1x2, LAY 2x1
+                alertasDisparadosPorJogo.set(idJogo_unico, { metodo1: false, metodo2: false, golIminente1T: false, golIminente1TFora: false, golIminente2T: false, golIminente2TFora: false, layDraw: false, lay00: false, lay01: false, lay10: false, favoritoVence: false, favoritoVira: false });
             } catch (err) {
                 return { ok: false, erro: err && err.message ? err.message : 'Erro ao abrir nova aba' };
             }

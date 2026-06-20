@@ -148,16 +148,6 @@ function onJogoAtualizado(jogo) {
                                 atualizarStatusCSV(id, 'GREEN'); decided = true;
                             }
                         }
-                        // Exact-score match (e.g., LAY_0x1) -> GREEN
-                        if (!decided) {
-                            const m = s.metodo || '';
-                            const scoreMatch = m.match(/(\d+)[x-](\d+)/);
-                            if (scoreMatch) {
-                                const exC = parseInt(scoreMatch[1],10)||0;
-                                const exF = parseInt(scoreMatch[2],10)||0;
-                                if (exC === gCNow && exF === gFNow) { atualizarStatusCSV(id, 'GREEN'); decided = true; }
-                            }
-                        }
                     }
                     if (!decided) { atualizarStatusCSV(id, 'RED'); }
                 } catch (e) {
@@ -182,4 +172,4 @@ try {
     // ignore if registration fails
 }
 
-module.exports = { registrarSinalPendente, onJogoAtualizado };
+module.exports = { registrarSinalPendente };

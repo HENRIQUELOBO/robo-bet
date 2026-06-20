@@ -443,11 +443,6 @@
                 'GATILHO_2T': "Janela: 46'–85'",
                 'GATILHO_2T_FORA': "Janela: 46'–85'",
                 'LAY_DRAW': "Janela: 25'–80'",
-                'LAY_0x1': "Janela: 20'–82'",
-                'LAY_1x0': "Janela: 20'–82'",
-                'LAY_1x2': "Janela: 20'–72'",
-                'LAY_2x1': "Janela: 20'–72'",
-                'LAY_1x1': "Janela: 30'–78'",
                 'FAVORITO_VENCE': "Janela: 15'–70'",
                 'FAVORITO_VIRA': "Janela: 20'–75'"
             };
@@ -459,11 +454,8 @@
                 'GATILHO_2T': ['janelaTempo', 'ataquesCasa<12', 'chutesNoAlvoCasa+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
                 'GATILHO_2T_FORA': ['janelaTempo', 'ataquesFora<12', 'chutesNoAlvoFora+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
                 'LAY_DRAW': ['janelaTempo', 'empate', 'dominancia<2.0', 'apmDominante<0.8', 'atqDominante<8', 'qualidadeBaixa'],
-                'LAY_0x1': ['janelaTempo', 'placar!=0-1', 'apmCasa<0.6', 'ataquesCasa<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
-                'LAY_1x0': ['janelaTempo', 'placar!=1-0', 'apmFora<0.6', 'ataquesFora<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
-                'LAY_1x2': ['janelaTempo', 'placar!=1-2', 'apmCasa<0.8', 'ataquesCasa<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
-                'LAY_2x1': ['janelaTempo', 'placar!=2-1', 'apmFora<0.8', 'ataquesFora<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
-                'LAY_1x1': ['janelaTempo', 'placar!=1-1', 'Pressão maior que 1.0', 'atqCombinado<10', 'chutesCombinados<2', 'ratio<1.8', 'qualidadeBaixa']
+                'FAVORITO_VENCE': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                'FAVORITO_VIRA': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa']
             };
 
             let html = '';

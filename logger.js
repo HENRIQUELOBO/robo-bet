@@ -70,12 +70,6 @@ const GATILHO_STATUS_MAP = {
     golIminente1T: "🔥 GATILHO 1T!",
     golIminente1TFora: "🔥 GATILHO 1T FORA",
     layDraw: "🏆 LAY DRAW",
-    lay11: "🎯 LAY 1x1",
-    lay01: "⚡ LAY 0x1",
-    lay10: "⚡ LAY 1x0",
-    lay12: "⚡ LAY 1x2",
-    lay21: "⚡ LAY 2x1",
-    lay00: "🔵 LAY 0x0",
 };
 
 function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
