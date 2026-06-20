@@ -3,7 +3,9 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const config = require('./config');
-const { formatarDataHora, sanitizarNomeJogo } = require('./util');
+const _util = require('./util') || {};
+const formatarDataHora = _util.formatarDataHora || _util._formatarDataHora;
+const sanitizarNomeJogo = _util.sanitizarNomeJogo || _util._sanitizarNomeJogo || ((n)=> (String(n||'').replace(/\s+/g,'_')));
 const serverHttp = require('./httpServer');
 
 const CAMINHO_LOG_CSV = path.join(__dirname, 'historico_gatilhos.csv');

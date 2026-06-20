@@ -24,15 +24,16 @@ function atualizarStatusCSV(signalId, novoStatus, info = '') {
         const lines = txt.split('\n');
         let changed = false;
         for (let i = 0; i < lines.length; i++) {
-            if (lines[i].includes(`${signalId};`)) {
-                // linha encontrada — substitui STATUS e preserva ID. CSV layout now:
-                // 0:DATA_HORA;1:PARTIDA;2:METODO;3:TEMPO;4:PLACAR;5:APM;6:XG;7:QUAL;8:ESC_CASA;9:ESC_FORA;10:STATUS;11:ID;12:INFO
-                const parts = lines[i].split(';');
-                // safe: ensure array long enough for indexes up to 12
-                while (parts.length < 13) parts.push('');
-                parts[10] = novoStatus; // STATUS index (0-based after adding esc fields)
-                // place info into dedicated INFO column to avoid shifting fields
-                if (info) parts[12] = info;
+            // find the line where one of the fields exactly equals the signalId
+            const parts = lines[i].split(';');
+            const idIndex = parts.findIndex(p => p === signalId);
+            if (idIndex !== -1) {
+                // assume STATUS is the field immediately before ID (idIndex-1)
+                const statusIndex = Math.max(0, idIndex - 1);
+                // Only update the STATUS field to the canonical values (GREEN/RED/EXPIRED)
+                parts[statusIndex] = String(novoStatus || '').toUpperCase();
+                // Remove any stray textual notes that may have been accidentally placed in the STATUS column
+                // and ensure we do NOT write arbitrary info into the CSV. We intentionally DO NOT write `info` here.
                 lines[i] = parts.join(';');
                 changed = true;
                 break;
@@ -53,12 +54,33 @@ function onJogoAtualizado(jogo) {
     if (!jogo || !jogo.id) return;
     // Se o jogo entrou no intervalo, resolver imediatamente sinais de 1T pendentes como RED
     try {
+        // If the game entered half-time, evaluate pending 1T signals and resolve them.
         if (jogo.noIntervalo) {
             for (const [id, s] of Array.from(pendentes.entries())) {
                 if (String(s.jogoId) === String(jogo.id)) {
                     const metodoLow = (s.metodo || '').toLowerCase();
                     if (metodoLow.includes('gatilho_1t') || metodoLow.includes('gatilho_1t_fora') || metodoLow.includes('1t')) {
-                        atualizarStatusCSV(id, 'RED', 'intervalo');
+                        try {
+                            const antes = (s.placar || '0-0').split('-').map(Number);
+                            const agora = (jogo.placar || '0-0').split('-').map(Number);
+                            const gCAnt = antes[0]||0, gFAnt = antes[1]||0;
+                            const gCNow = agora[0]||0, gFNow = agora[1]||0;
+                            // If there was a favorable score change before interval, mark GREEN; otherwise RED.
+                            if (gCNow > gCAnt) {
+                                // home scored
+                                if (metodoLow.includes('fora')) atualizarStatusCSV(id, 'RED');
+                                else atualizarStatusCSV(id, 'GREEN');
+                            } else if (gFNow > gFAnt) {
+                                // away scored
+                                if (metodoLow.includes('fora')) atualizarStatusCSV(id, 'GREEN');
+                                else atualizarStatusCSV(id, 'RED');
+                            } else {
+                                // no scoring change -> mark RED for 1T
+                                atualizarStatusCSV(id, 'RED', 'intervalo');
+                            }
+                        } catch (ex) {
+                            atualizarStatusCSV(id, 'RED', 'intervalo_error');
+                        }
                         pendentes.delete(id);
                     }
                 }
@@ -87,14 +109,18 @@ function onJogoAtualizado(jogo) {
                 const metodoLow = (s.metodo || '').toLowerCase();
                 const antesFoiEmpate = (gCAnt === gFAnt);
                 const agoraEhEmpate = (gCNow === gFNow);
+                // Stronger rule for LAY_DRAW: if draw state changed (either draw->not-draw or not-draw->draw)
+                // resolve immediately: draw->not-draw = GREEN (lay succeeded), not-draw->draw = RED (lay failed)
                 if (metodoLow.includes('draw') || metodoLow.includes('lay_draw') || metodoLow.includes('lay draw')) {
-                    // if previously draw and now not draw => GREEN (draw eliminated)
-                    if (antesFoiEmpate && !agoraEhEmpate) {
-                        atualizarStatusCSV(id, 'GREEN', 'lay_draw_goal');
+                    if (antesFoiEmpate !== agoraEhEmpate) {
+                        if (antesFoiEmpate && !agoraEhEmpate) {
+                            atualizarStatusCSV(id, 'GREEN', 'lay_draw_goal');
+                        } else {
+                            atualizarStatusCSV(id, 'RED', 'lay_draw_now_draw');
+                        }
                         pendentes.delete(id);
                         continue;
                     }
-                    // otherwise, if became draw at end -> RED handled in end-of-match block below
                 }
 
                 let resolved = false;

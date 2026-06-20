@@ -37,6 +37,24 @@ function parsePlacar(placar) {
 
 const { createAnalyzer } = require('./engine_analysis');
 
+// --- QUANT HELPERS INSERTED BEGIN ---
+const QUANT_CONFIG = {
+    acelThreshold: 1,
+    sustainedWindow: 3,
+    apmPressureThreshold: 0.4,
+    ataqueThreshold2T: 12,
+    chEscThreshold2T: 3,
+    qualThreshold2T: 0.18,
+    weights: { acel: 0.25, apm: 0.20, qual: 0.20, xgMoment: 0.20, market: 0.10 },
+    scoreThreshold: 0.6
+};
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function mean(arr) { if (!arr || arr.length===0) return 0; return arr.reduce((a,b)=>a+b,0)/arr.length; }
+function calcularAceleracaoNormalizada(historico, tempoAtual) { const ac = calcularAceleracao(historico, tempoAtual); const limite = Math.max(0, tempoAtual - 10); const ataques10 = historico.filter(m => m > limite).length; return ataques10 > 0 ? ac / ataques10 : (ac>0? 1 : 0); }
+function pushPressureSample(jogo, team, sample) { const key = team === 'casa' ? '_pressureWindowCasa' : '_pressureWindowFora'; jogo[key] = jogo[key] || []; jogo[key].push(sample); if (jogo[key].length > QUANT_CONFIG.sustainedWindow) jogo[key].shift(); }
+function isSustainedPressure(jogo, team) { const key = team === 'casa' ? '_pressureWindowCasa' : '_pressureWindowFora'; const arr = jogo[key] || []; if (arr.length < QUANT_CONFIG.sustainedWindow) return false; const truths = arr.filter(Boolean).length; return truths >= Math.ceil(QUANT_CONFIG.sustainedWindow * 0.66); }
+// --- QUANT HELPERS INSERTED END ---
+
 function processarMotorDeRegras(idJogo, jogo, alertas) {
     const minAtual = jogo.tempo;
     // objecto de análise por método (visível no front-end via logger)
@@ -207,24 +225,55 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // Score: casa a perder ou empate (sem valor se já a ganhar)
         // ─────────────────────────────────────────────────────────────────
         analyzer.init('GATILHO_2T');
-        // NOTE: broadened 2T window to start at 46' so second-half early minutes are considered
         if (!emCooldown && minAtual >= 46 && minAtual <= 85 && !alertas.golIminente2T) {
-            // compute booleans for debug/traceability
-            const okWindow = (minAtual >= 46 && minAtual <= 85);
-            const okDif = difGols <= 0;
-            const okAtaques = jogo.momentum.ataquesCasa >= 12;
-            const okChEsc = (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= 3;
-            const okAcel = acCasa >= 0;
-            const okQual = qualCasa >= 0.18;
-            // (removed verbose debug logging)
-            if (okDif && okAtaques && okChEsc && okAcel && okQual) {
-                alertas.golIminente2T = true;
-                analyzer.setMet('GATILHO_2T');
-                const ctx = difGols < 0 ? '🔴 Casa a perder' : '🟡 Empate';
-                const msg = `🚨 *WOLF QUANT - GATILHO 2T*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa > 0 ? '+' : ''}${acCasa}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa}`;
-                require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T");
+            if (difGols <= 0) {
+                const acelNorm = clamp01(calcularAceleracaoNormalizada(jogo.historicoAtqCasa, minAtual));
+                const apmNorm  = clamp01(apmCasa / 1.5);
+                const qualVal  = jogo.momentum.ataquesCasa > 0 ? (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) / jogo.momentum.ataquesCasa : null;
+                const qualNorm = qualVal != null ? clamp01((qualVal - 0.05) / (0.4 - 0.05)) : 0;
+                let xgMomentNorm = 0;
+                try {
+                    const chLast5 = jogo.historicoChAlvoCasa.filter(t => t > Math.max(0, minAtual - 5)).length;
+                    const chPrev5 = jogo.historicoChAlvoCasa.filter(t => t > Math.max(0, minAtual - 10) && t <= Math.max(0, minAtual - 5)).length;
+                    const deltaCh = chLast5 - chPrev5;
+                    xgMomentNorm = clamp01((deltaCh + 1) / 3);
+                } catch (e) { xgMomentNorm = 0; }
+
+                const marketSignal = (() => {
+                    const odds = jogo.betfairOdds;
+                    if (!odds || odds.statusMercado !== 'OPEN') return 0;
+                    if (odds.oddCasaBack && odds.oddForaBack) {
+                        const casaFav = odds.oddCasaBack < odds.oddForaBack;
+                        if (casaFav && odds.oddCasaBack <= 2.2) return 1;
+                    }
+                    return 0;
+                })();
+
+                const w = QUANT_CONFIG.weights;
+                const score = (w.acel * acelNorm) + (w.apm * apmNorm) + (w.qual * qualNorm) + (w.xgMoment * xgMomentNorm) + (w.market * marketSignal);
+                const sustained = isSustainedPressure(jogo, "casa");
+
+                analyzer.addExpected('GATILHO_2T', 'score', score.toFixed(2));
+                if (!sustained) analyzer.addMissing('GATILHO_2T', 'sustainedPressure', `${(jogo._pressureWindowCasa||[]).join(',')}`);
+                if (jogo.momentum.ataquesCasa < QUANT_CONFIG.ataqueThreshold2T) analyzer.addMissing('GATILHO_2T', 'ataquesCasa<12', jogo.momentum.ataquesCasa);
+                if ((jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) < QUANT_CONFIG.chEscThreshold2T) analyzer.addMissing('GATILHO_2T', 'ch+esc<3', (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa));
+                if (qualVal == null) analyzer.addMissing('GATILHO_2T', 'qualidadeN/D', 'N/D'); else if (qualVal < QUANT_CONFIG.qualThreshold2T) analyzer.addMissing('GATILHO_2T', 'qualidadeBaixa', Math.round((qualVal||0)*100));
+
+                if (score >= QUANT_CONFIG.scoreThreshold &&
+                    sustained &&
+                    jogo.momentum.ataquesCasa >= QUANT_CONFIG.ataqueThreshold2T &&
+                    (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) >= QUANT_CONFIG.chEscThreshold2T) {
+
+                    alertas.golIminente2T = true;
+                    analyzer.setMet('GATILHO_2T');
+                    try { jogo._engineAnalysis.GATILHO_2T = jogo._engineAnalysis.GATILHO_2T || {}; jogo._engineAnalysis.GATILHO_2T.confidence = score; } catch (e) {}
+                    const ctx = difGols < 0 ? '🔴 Casa a perder' : '🟡 Empate';
+                    const msg = `🚨 *WOLF QUANT - GATILHO 2T*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | score:${score.toFixed(2)} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Casa: ${apmCasa.toFixed(2)} | Aceleração: ${acCasa>0? '+'+acCasa:acCasa}\n🔬 AtqP: ${jogo.momentum.ataquesCasa} | Ch+Esc: ${jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa}`;
+                    require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T");
+                }
             }
         }
+
         // marca motivos pelos quais o gatilho ficou 'faltando' (mesma abordagem do 1T)
         if (emCooldown) analyzer.addMissing('GATILHO_2T', 'emCooldown', minAtual);
         if (minAtual < 46 || minAtual > 85) analyzer.addMissing('GATILHO_2T', 'janelaTempo', `${minAtual}'`);
@@ -232,7 +281,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (jogo.momentum.ataquesCasa < 12) analyzer.addMissing('GATILHO_2T', 'ataquesCasa<12', jogo.momentum.ataquesCasa);
         if ((jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa) < 3) analyzer.addMissing('GATILHO_2T', 'chutesNoAlvoCasa+escanteios<3', (jogo.momentum.chutesNoAlvoCasa + jogo.momentum.escanteiosCasa));
         if (acCasa < 0) analyzer.addMissing('GATILHO_2T', 'aceleracaoNegativa', acCasa);
-        if (qualCasa < 0.18) analyzer.addMissing('GATILHO_2T', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualCasa*100));
+        if (qualCasa < 0.18) analyzer.addMissing('GATILHO_2T', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', (jogo.momentum.ataquesCasa>0? Math.round(qualCasa*100) : 'N/D'));
         if (!emCooldown && minAtual >= 46 && minAtual <= 85 && !alertas.golIminente2T && analyzer.get()['GATILHO_2T'].missing.length === 0) {
             alertas.golIminente2T = true;
             analyzer.setMet('GATILHO_2T');
@@ -248,17 +297,54 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // ─────────────────────────────────────────────────────────────────
         analyzer.init('GATILHO_2T_FORA');
         if (!emCooldown && minAtual >= 58 && minAtual <= 85 && !alertas.golIminente2TFora) {
-            if (difGols >= 0 &&   // fora a perder (difGols>0) ou empate (=0)
-                jogo.momentum.ataquesFora >= 12 &&
-                (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) >= 3 &&
-                acFora >= 0 && qualFora >= 0.18) {
-                alertas.golIminente2TFora = true;
-                analyzer.setMet('GATILHO_2T_FORA');
-                const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
-                const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
-                require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T_FORA");
+            if (difGols >= 0) {
+                const acelNorm = clamp01(calcularAceleracaoNormalizada(jogo.historicoAtqFora, minAtual));
+                const apmNorm  = clamp01(apmFora / 1.5);
+                const qualVal  = jogo.momentum.ataquesFora > 0 ? (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) / jogo.momentum.ataquesFora : null;
+                const qualNorm = qualVal != null ? clamp01((qualVal - 0.05) / (0.4 - 0.05)) : 0;
+                let xgMomentNorm = 0;
+                try {
+                    const chLast5 = jogo.historicoChAlvoFora.filter(t => t > Math.max(0, minAtual - 5)).length;
+                    const chPrev5 = jogo.historicoChAlvoFora.filter(t => t > Math.max(0, minAtual - 10) && t <= Math.max(0, minAtual - 5)).length;
+                    const deltaCh = chLast5 - chPrev5;
+                    xgMomentNorm = clamp01((deltaCh + 1) / 3);
+                } catch (e) { xgMomentNorm = 0; }
+
+                const marketSignal = (() => {
+                    const odds = jogo.betfairOdds;
+                    if (!odds || odds.statusMercado !== 'OPEN') return 0;
+                    if (odds.oddCasaBack && odds.oddForaBack) {
+                        const foraFav = odds.oddForaBack < odds.oddCasaBack;
+                        if (foraFav && odds.oddForaBack <= 2.2) return 1;
+                    }
+                    return 0;
+                })();
+
+                const w = QUANT_CONFIG.weights;
+                const score = (w.acel * acelNorm) + (w.apm * apmNorm) + (w.qual * qualNorm) + (w.xgMoment * xgMomentNorm) + (w.market * marketSignal);
+                const sustained = isSustainedPressure(jogo, "fora");
+
+                analyzer.addExpected('GATILHO_2T_FORA', 'score', score.toFixed(2));
+                if (!sustained) analyzer.addMissing('GATILHO_2T_FORA', 'sustainedPressure', `${(jogo._pressureWindowFora||[]).join(',')}`);
+                if (jogo.momentum.ataquesFora < QUANT_CONFIG.ataqueThreshold2T) analyzer.addMissing('GATILHO_2T_FORA', 'ataquesFora<12', jogo.momentum.ataquesFora);
+                if ((jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) < QUANT_CONFIG.chEscThreshold2T) analyzer.addMissing('GATILHO_2T_FORA', 'ch+esc<3', (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora));
+                if (qualVal == null) analyzer.addMissing('GATILHO_2T_FORA', 'qualidadeN/D', 'N/D'); else if (qualVal < QUANT_CONFIG.qualThreshold2T) analyzer.addMissing('GATILHO_2T_FORA', 'qualidadeBaixa', Math.round((qualVal||0)*100));
+
+                if (score >= QUANT_CONFIG.scoreThreshold &&
+                    sustained &&
+                    jogo.momentum.ataquesFora >= QUANT_CONFIG.ataqueThreshold2T &&
+                    (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) >= QUANT_CONFIG.chEscThreshold2T) {
+
+                    alertas.golIminente2TFora = true;
+                    analyzer.setMet('GATILHO_2T_FORA');
+                    try { jogo._engineAnalysis.GATILHO_2T_FORA = jogo._engineAnalysis.GATILHO_2T_FORA || {}; jogo._engineAnalysis.GATILHO_2T_FORA.confidence = score; } catch (e) {}
+                    const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
+                    const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\\n🏟️ ${jogo.nomePartida}\\n⏱️ ${minAtual}' | ${ctx} | score:${score.toFixed(2)} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora>0? '+'+acFora:acFora}\\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
+                    require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T_FORA");
+                }
             }
         }
+
         // marcar motivos de 'missing' para GATILHO_2T_FORA
         if (emCooldown) analyzer.addMissing('GATILHO_2T_FORA', 'emCooldown', minAtual);
         if (minAtual < 58 || minAtual > 85) analyzer.addMissing('GATILHO_2T_FORA', 'janelaTempo', `${minAtual}'`);
@@ -266,7 +352,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (jogo.momentum.ataquesFora < 12) analyzer.addMissing('GATILHO_2T_FORA', 'ataquesFora<12', jogo.momentum.ataquesFora);
         if ((jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora) < 3) analyzer.addMissing('GATILHO_2T_FORA', 'chutesNoAlvoFora+escanteios<3', (jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora));
         if (acFora < 0) analyzer.addMissing('GATILHO_2T_FORA', 'aceleracaoNegativa', acFora);
-        if (qualFora < 0.18) analyzer.addMissing('GATILHO_2T_FORA', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualFora*100));
+        if (qualFora < 0.18) analyzer.addMissing('GATILHO_2T_FORA', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', (jogo.momentum.ataquesFora>0? Math.round(qualFora*100) : 'N/D'));
         if (!emCooldown && minAtual >= 58 && minAtual <= 85 && !alertas.golIminente2TFora && analyzer.get()['GATILHO_2T_FORA'].missing.length === 0) {
             alertas.golIminente2TFora = true;
             analyzer.setMet('GATILHO_2T_FORA');

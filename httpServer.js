@@ -81,6 +81,21 @@ module.exports = (props) => {
             return;
         }
 
+        // New explicit API endpoints to serve compact/full telemetry JSON regardless of static handlers
+        if ((req.url === '/api/reports/telemetry_report_compact.json' || req.url === '/api/reports/telemetry_report.json') && req.method === 'GET') {
+            try {
+                const rel = req.url.split('/api/reports/').pop();
+                const filePath = path.join(__dirname, 'reports', rel);
+                if (!fs.existsSync(filePath)) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ ok:false, erro: 'not found' })); }
+                const data = fs.readFileSync(filePath, 'utf8');
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+                return res.end(data);
+            } catch (e) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ ok:false, erro: String(e && e.message ? e.message : e) }));
+            }
+        }
+
         if (req.url === '/api/historico' && req.method === 'GET') {
             // Read and parse CSV into JSON. Merge any pending confirmations so totals reflect user edits
             const csvPath = path.join(__dirname, 'historico_gatilhos.csv');
@@ -156,6 +171,38 @@ module.exports = (props) => {
                     try { if (fs.existsSync(cnfPath)) cnf = JSON.parse(fs.readFileSync(cnfPath, 'utf8') || '{}'); } catch(e) { cnf = {}; }
                     cnf[String(id)] = { resultado: novo, ts: Date.now() };
                     fs.writeFileSync(cnfPath, JSON.stringify(cnf, null, 2), 'utf8');
+                    // Also apply immediately to CSV so dashboard reflects the change without needing /apply
+                    try {
+                        const csvPath = path.join(__dirname, 'historico_gatilhos.csv');
+                        if (fs.existsSync(csvPath)) {
+                            const txt = fs.readFileSync(csvPath, 'utf8');
+                            const lines = txt.split(/\r?\n/);
+                            if (id >=1 && id <= lines.length && lines[id-1].trim() !== '') {
+                                const cols = lines[id-1].split(';').map(c=>c);
+                                // robustly remove any existing sig_ token and trailing notes, then write STATUS
+                                let idCol = cols.findIndex(c => typeof c === 'string' && c.trim().startsWith('sig_'));
+                                if (idCol !== -1) {
+                                    const statusCol = Math.max(0, idCol - 1);
+                                    cols[statusCol] = novo;
+                                    // Remove the signal id and any trailing tokens so CSV has no sig_/notes after apply
+                                    cols.splice(statusCol + 1);
+                                } else {
+                                    // No sig_ found: replace the last non-empty token (legacy format)
+                                    for (let i = cols.length-1;i>=0;i--) {
+                                        if (cols[i] && cols[i].trim() !== '') { cols[i] = novo; break; }
+                                    }
+                                }
+                                // ensure line ends with an empty token after STATUS for consistent CSV layout
+                                if (cols[cols.length-1] !== '') cols.push('');
+                                lines[id-1] = cols.join(';');
+                                fs.writeFileSync(csvPath, lines.join('\n'), 'utf8');
+                                // remove confirmation since applied
+                                delete cnf[String(id)];
+                                fs.writeFileSync(cnfPath, JSON.stringify(cnf, null, 2), 'utf8');
+                            }
+                        }
+                    } catch(e) { /* non-fatal */ }
+
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     return res.end(JSON.stringify({ ok:true, id, resultado: novo }));
                 } catch (e) {
@@ -166,7 +213,6 @@ module.exports = (props) => {
             return;
         }
 
-        // return current confirmations
         if (req.url === '/api/confirmacoes' && req.method === 'GET') {
             const cnfPath = path.join(__dirname, 'historico_confirmacoes.json');
             let cnf = {};
@@ -219,10 +265,23 @@ module.exports = (props) => {
                         if (!lines[id-1] || lines[id-1].trim()==='') continue;
                         const cols = lines[id-1].split(';').map(c=>c);
                         let replaced = false;
-                        for (let i = cols.length-1; i>=0; i--) {
-                            if (cols[i] && cols[i].trim() !== '') { cols[i] = String(cnf[k].resultado || ''); replaced = true; break; }
+                        // Prefer to overwrite the STATUS column which should be immediately before the signal ID
+                        const idCol = cols.findIndex(c => typeof c === 'string' && c.startsWith('sig_'));
+                        if (idCol !== -1) {
+                            const statusCol = Math.max(0, idCol - 1);
+                            // Overwrite STATUS column
+                            cols[statusCol] = String(cnf[k].resultado || '');
+                            // Remove any stray tokens after the ID (e.g. notes like 'intervalo')
+                            // Keep only up to idCol (inclusive)
+                            cols.splice(idCol + 1);
+                            replaced = true;
+                        } else {
+                            // fallback: replace last non-empty token (legacy behaviour)
+                            for (let i = cols.length-1; i>=0; i--) {
+                                if (cols[i] && cols[i].trim() !== '') { cols[i] = String(cnf[k].resultado || ''); replaced = true; break; }
+                            }
+                            if (!replaced) cols.push(String(cnf[k].resultado || ''));
                         }
-                        if (!replaced) cols.push(String(cnf[k].resultado || ''));
                         lines[id-1] = cols.join(';');
                         applied++;
                         // remove applied confirmation from cnf
@@ -292,9 +351,73 @@ module.exports = (props) => {
             return; // we've set up the POST body handlers; don't fall through to 404
 
         } else {
+            // Try serving report page or reports assets before returning 404
+            try {
+                if ((req.url === '/report' || req.url === '/report.html') && req.method === 'GET') {
+                    const filePath = path.join(__dirname, 'report.html');
+                    if (fs.existsSync(filePath)) {
+                        const data = fs.readFileSync(filePath);
+                        res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(data);
+                    } else {
+                        res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('report.html not found');
+                    }
+                    return;
+                }
+                if (req.url.startsWith('/reports/') && req.method === 'GET') {
+                    const rel = req.url.replace(/^\/reports\//, '');
+                    const filePath = path.join(__dirname, 'reports', rel);
+                    if (!fs.existsSync(filePath)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
+                    const ext = path.extname(filePath).toLowerCase();
+                    let mime = 'application/octet-stream';
+                    if (ext === '.json') mime = 'application/json';
+                    else if (ext === '.csv') mime = 'text/csv';
+                    else if (ext === '.html') mime = 'text/html';
+                    const data = fs.readFileSync(filePath);
+                    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' }); res.end(data);
+                    return;
+                }
+            } catch (e) {
+                // proceed to default 404
+            }
             res.writeHead(404); res.end();
         }
     });
 
-    server.listen(3000, '0.0.0.0', () => {});
-}
+    // Serve report page and report assets (JSON/CSV) from /reports
+    // We add a small helper: if a request for /report or /reports/* arrives, serve the file early.
+    // This runs inside the module scope so 'server' is accessible.
+    server.on('request', (req, res) => {
+        try {
+            if ((req.url === '/report' || req.url === '/report.html') && req.method === 'GET') {
+                const filePath = path.join(__dirname, 'report.html');
+                if (fs.existsSync(filePath)) {
+                    const data = fs.readFileSync(filePath);
+                    res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(data);
+                } else {
+                    res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('report.html not found');
+                }
+                return;
+            }
+
+            if (req.url.startsWith('/reports/') && req.method === 'GET') {
+                const rel = req.url.replace(/^\/reports\//, '');
+                const filePath = path.join(__dirname, 'reports', rel);
+                if (!fs.existsSync(filePath)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
+                const ext = path.extname(filePath).toLowerCase();
+                let mime = 'application/octet-stream';
+                if (ext === '.json') mime = 'application/json';
+                else if (ext === '.csv') mime = 'text/csv';
+                else if (ext === '.html') mime = 'text/html';
+                const data = fs.readFileSync(filePath);
+                res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' }); res.end(data);
+                return;
+            }
+        } catch (e) {
+            // do not crash on errors here; main handler will handle or return 404
+        }
+    });
+
+    if (process.env.DISABLE_HTTP !== '1') {
+        server.listen(3000, '0.0.0.0', () => {});
+    }
+ }
