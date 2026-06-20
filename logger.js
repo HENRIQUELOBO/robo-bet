@@ -11,6 +11,8 @@ const CAMINHO_LOG_CSV = path.join(__dirname, 'historico_gatilhos.csv');
 let clientesSSE = [];
 let dadosUltimosJogos = [];
 let _callbackAdicionarJogo = null;
+// callback holder specifically for per-jogo updates (monitor results)
+const _sharedUpdateCallback = { fn: null };
 // Mapa de screenshots momentum: { [jogoId]: base64String }
 const _screenshotsMomentum = new Map();
 
@@ -20,6 +22,10 @@ const _sharedCallback = { fn: null };
 function registrarCallbackAdicionarJogo(fn) {
     _callbackAdicionarJogo = fn;
     _sharedCallback.fn = fn;
+}
+
+function registrarCallbackJogoAtualizado(fn) {
+    _sharedUpdateCallback.fn = fn;
 }
 
 // Passa uma função getter para que o servidor HTTP possa obter sempre
@@ -45,7 +51,10 @@ function registrarTelemetriaContinua(jogo) {
         if (!fs.existsSync(pastaTelemetria)) fs.mkdirSync(pastaTelemetria, { recursive: true });
 
         const caminhoTxt = path.join(pastaTelemetria, `telemetria_${nomeJogoSanitizado}_${dataFormatada}.txt`);
-        const linhaLog = `[${horaMinutoSegundo}] | Min: ${jogo.tempo}' | Placar: ${jogo.placar} | APM Max: ${jogo.pressao.toFixed(2)} | xG C: ${jogo.xgCasa.toFixed(2)} - xG F: ${jogo.xgFora.toFixed(2)} | APM10m C/F: ${jogo.momentum.ataquesCasa}/${jogo.momentum.ataquesFora}\n`;
+        // Use momentum escanteios (micro10 momentum) when available — preferred for tests
+        const escC = (jogo.momentum && typeof jogo.momentum.escanteiosCasa === 'number') ? jogo.momentum.escanteiosCasa : (jogo.escanteiosCasa || 0);
+        const escF = (jogo.momentum && typeof jogo.momentum.escanteiosFora === 'number') ? jogo.momentum.escanteiosFora : (jogo.escanteiosFora || 0);
+        const linhaLog = `[${horaMinutoSegundo}] | Min: ${jogo.tempo}' | Placar: ${jogo.placar} | APM Max: ${jogo.pressao.toFixed(2)} | xG C: ${jogo.xgCasa.toFixed(2)} - xG F: ${jogo.xgFora.toFixed(2)} | Esc: ${escC}/${escF} | APM10m C/F: ${jogo.momentum.ataquesCasa}/${jogo.momentum.ataquesFora}\n`;
         fs.appendFileSync(caminhoTxt, linhaLog, 'utf8');
     } catch (err) {
         // Log de erro no stderr para diagnóstico sem quebrar o fluxo principal
@@ -138,7 +147,14 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
         console.log(`[LOGGER] Enviando ${listaJogos.length} jogos via SSE — engineAnalysis presente em ${withAnalysis}`);
     } catch (e) { /* ignore logging errors */ }
 
-    // monitor notifications removed — broadcasting to SSE only
+    // Notify any registered in-process callbacks about jogo updates (used by monitor_results)
+    try {
+        if (_sharedUpdateCallback && typeof _sharedUpdateCallback.fn === 'function') {
+            listaJogos.forEach(j => { try { _sharedUpdateCallback.fn(j); } catch (e) { /* non-fatal */ } });
+        }
+    } catch (e) { /* ignore */ }
+
+    // broadcast to SSE clients
     clientesSSE.forEach(res => { res.write(`data: ${JSON.stringify(listaJogos)}\n\n`); });
 }
 
@@ -152,11 +168,14 @@ async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
     const { data: dataHoje, hora: horaAgora } = formatarDataHora();
     const signalId = `sig_${Date.now()}_${Math.floor(Math.random()*100000)}`;
     const placarParaCsv = jogo.placar || 'N/D';
-    const linhaLog = `${dataHoje} ${horaAgora};${(jogo.nomePartida||'').replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${placarParaCsv};${(jogo.pressao||0).toFixed(2)};${(Math.max(jogo.xgCasa||0, jogo.xgFora||0)).toFixed(2)};${qualidadeSinal};PENDING;${signalId};\n`;
+    // Prefer momentum escanteios (micro10) for signal snapshot; fall back to jogo totals
+    const escC = (jogo.momentum && typeof jogo.momentum.escanteiosCasa === 'number') ? jogo.momentum.escanteiosCasa : (jogo.escanteiosCasa || 0);
+    const escF = (jogo.momentum && typeof jogo.momentum.escanteiosFora === 'number') ? jogo.momentum.escanteiosFora : (jogo.escanteiosFora || 0);
+    const linhaLog = `${dataHoje} ${horaAgora};${(jogo.nomePartida||'').replace(/;/g, '-')};${metodoAtivado};${jogo.tempo};${placarParaCsv};${(jogo.pressao||0).toFixed(2)};${(Math.max(jogo.xgCasa||0, jogo.xgFora||0)).toFixed(2)};${qualidadeSinal};${escC};${escF};PENDING;${signalId};\n`;
 
     try {
         try { await fsp.access(CAMINHO_LOG_CSV); } catch (err) {
-            const header = "DATA_HORA;PARTIDA;METODO;TEMPO_DISPARO;PLACAR_MOMENTO;APM_MOMENTO;XG_MAX_MOMENTO;QUALIDADE_SINAL;STATUS;ID;\n";
+            const header = "DATA_HORA;PARTIDA;METODO;TEMPO_DISPARO;PLACAR_MOMENTO;APM_MOMENTO;XG_MAX_MOMENTO;QUALIDADE_SINAL;ESC_CASA;ESC_FORA;STATUS;ID;\n";
             await fsp.writeFile(CAMINHO_LOG_CSV, header, 'utf8');
         }
 
@@ -216,4 +235,4 @@ function removerScreenshotMomentum(jogoId) {
     _screenshotsMomentum.delete(String(jogoId));
 }
 
-module.exports = { registrarTelemetriaContinua, enviarAlertaTelegram, atualizarDadosPainelWeb, registrarCallbackAdicionarJogo, registrarScreenshotMomentum, removerScreenshotMomentum };
+module.exports = { registrarTelemetriaContinua, enviarAlertaTelegram, atualizarDadosPainelWeb, registrarCallbackAdicionarJogo, registrarCallbackJogoAtualizado, registrarScreenshotMomentum, removerScreenshotMomentum };

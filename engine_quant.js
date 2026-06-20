@@ -286,8 +286,8 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         // Janela: 25'–78' (antes disso a odd do draw é muito alta; depois cai)
         // ─────────────────────────────────────────────────────────────────
         analyzer.init('LAY_DRAW');
-        analyzer.addExpected('LAY_DRAW', "janelaTempo - Janela 25'-78'", minAtual);
-        if (minAtual < 25 || minAtual > 78) analyzer.addMissing('LAY_DRAW', "janelaTempo - Janela 25'-78'", `${minAtual}'`);
+        analyzer.addExpected('LAY_DRAW', "janelaTempo - Janela 25'-80'", minAtual);
+        if (minAtual < 25 || minAtual > 80) analyzer.addMissing('LAY_DRAW', "janelaTempo - Janela 25'-80'", `${minAtual}'`);
         analyzer.addExpected('LAY_DRAW', 'empate - Placar deve ser empate', jogo.placar || 'N/D');
         if (!(gC === gF)) analyzer.addMissing('LAY_DRAW', 'empate - Placar deve ser empate', jogo.placar || 'N/D');
         const ratioLayDraw = (apmCasa > 0 && apmFora > 0) ? Math.max(apmCasa, apmFora) / Math.min(apmCasa, apmFora) : 0;
@@ -300,8 +300,18 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         analyzer.addExpected('LAY_DRAW', 'atqDominante<8 - Ataques da equipa dominante ≥ 8', atqDominanteLayDraw);
         if (atqDominanteLayDraw < 8) analyzer.addMissing('LAY_DRAW', 'atqDominante<8 - Ataques da equipa dominante ≥ 8', atqDominanteLayDraw);
         const qualDominanteLayDraw = apmCasa >= apmFora ? qualCasa : qualFora;
-        analyzer.addExpected('LAY_DRAW', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualDominanteLayDraw*100));
-        if (qualDominanteLayDraw < 0.18) analyzer.addMissing('LAY_DRAW', 'qualidadeBaixa - Qualidade do ataque ≥ 18%', Math.round(qualDominanteLayDraw*100));
+        // explicit criterion for quality of dominant team (expressed as percent)
+        analyzer.addExpected('LAY_DRAW', 'qualDominante>=18% - Qualidade do ataque dominante ≥ 18%', Math.round(qualDominanteLayDraw*100));
+        if (qualDominanteLayDraw < 0.18) analyzer.addMissing('LAY_DRAW', 'qualDominante>=18% - Qualidade do ataque dominante ≥ 18%', Math.round(qualDominanteLayDraw*100));
+        // posse dominante (used later in composite check) - expose as criterion
+        const posseDominanteLayDraw = apmCasa >= apmFora ? (jogo.posseBolaCasa || 50) : (jogo.posseBolaFora || 50);
+        analyzer.addExpected('LAY_DRAW', 'posseConfirma - Posse confirmatória ≥ 55%', posseDominanteLayDraw);
+        // if possession is the default 50 (no data), expose explicitly as N/D to the UI
+        if (posseDominanteLayDraw === 50 && (jogo.posseBolaCasa == null && jogo.posseBolaFora == null)) {
+            analyzer.addMissing('LAY_DRAW', 'posseConfirma - Posse confirmatória ≥ 55%', 'N/D');
+        } else if (posseDominanteLayDraw < 55) {
+            analyzer.addMissing('LAY_DRAW', 'posseConfirma - Posse confirmatória ≥ 55%', posseDominanteLayDraw);
+        }
         if (!emCooldown && !alertas.layDraw && minAtual >= 25 && minAtual <= 78) {
             const ehEmpate = (gC === gF);
             if (ehEmpate) {
@@ -312,7 +322,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 const apmDominante    = apmCasa >= apmFora ? apmCasa : apmFora;
                 const atqDominante    = apmCasa >= apmFora ? jogo.momentum.ataquesCasa : jogo.momentum.ataquesFora;
                 const posseDominante  = apmCasa >= apmFora ? (jogo.posseBolaCasa || 50) : (jogo.posseBolaFora || 50);
-                // Posse ≥ 55% é confirmatório mas não obrigatório (pode ser 0 se não scraped)
+                // Posse ≥ 55% é confirmatório mas não obrigatório (pode ser 50 se não scraped)
                 const posseConfirma   = posseDominante >= 55 || posseDominante === 50; // 50 = default (sem dado)
                     if (ratio >= 2.0 && apmDominante >= 0.8 && atqDominante >= 8 &&
                     qualDominante >= 0.18 && posseConfirma) {
@@ -325,40 +335,6 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────
-        // MÉTODO 7 — LAY 0x0: Pressão crescente com score a zeros (20'–65')
-        // Mercado: Correct Score. Complementa o LAY DRAW no mercado de 1x2.
-        // ─────────────────────────────────────────────────────────────────
-        analyzer.init('LAY_0x0');
-        analyzer.addExpected('LAY_0x0', "janelaTempo - Janela 20'-65'", minAtual);
-        if (minAtual < 20 || minAtual > 65) analyzer.addMissing('LAY_0x0', "janelaTempo - Janela 20'-65'", `${minAtual}'`);
-        analyzer.addExpected('LAY_0x0', 'gols!=0-0 - Placar deve ser 0-0', jogo.placar || 'N/D');
-        if (!(gC === 0 && gF === 0)) analyzer.addMissing('LAY_0x0', 'gols!=0-0 - Placar deve ser 0-0', jogo.placar || 'N/D');
-        const atqCombinadoLay0x0 = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
-        analyzer.addExpected('LAY_0x0', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
-        if (jogo.pressao < 1.0) analyzer.addMissing('LAY_0x0', 'pressao<1.0 - Pressão total ≥ 1.0', jogo.pressao);
-        analyzer.addExpected('LAY_0x0', 'atqCombinado<8 - Ataques combinados ≥ 8', atqCombinadoLay0x0);
-        if (atqCombinadoLay0x0 < 8) analyzer.addMissing('LAY_0x0', 'atqCombinado<8 - Ataques combinados ≥ 8', atqCombinadoLay0x0);
-        const qualidadeReal0x0 = Math.max(qualCasa, qualFora) >= 0.20;
-        analyzer.addExpected('LAY_0x0', 'qualidadeBaixa - Qualidade (max) ≥ 20%', Math.round(Math.max(qualCasa,qualFora)*100));
-        if (!qualidadeReal0x0) analyzer.addMissing('LAY_0x0', 'qualidadeBaixa - Qualidade (max) ≥ 20%', Math.round(Math.max(qualCasa,qualFora)*100));
-        analyzer.addExpected('LAY_0x0', 'aceleracaoNegativa - Aceleração total ≥ 0', acCasa+acFora);
-        if ((acCasa + acFora) < 0) analyzer.addMissing('LAY_0x0', 'aceleracaoNegativa - Aceleração total ≥ 0', acCasa+acFora);
-        if (!emCooldown && !alertas.lay00 && minAtual >= 20 && minAtual <= 65) {
-            if (gC === 0 && gF === 0) {
-                const atqCombinado = jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora;
-                // Exige que PELO MENOS UMA equipa tenha qualidade ≥ 0.20
-                const qualidadeReal = Math.max(qualCasa, qualFora) >= 0.20;
-                    if (jogo.pressao >= 1.0 && atqCombinado >= 8 && qualidadeReal &&
-                    (acCasa + acFora) >= 0) {
-                    alertas.lay00 = true;
-                        analyzer.setMet('LAY_0x0');
-                    const equipa = apmCasa >= apmFora ? 'CASA' : 'FORA';
-                    const msg = `🔵 *WOLF QUANT - LAY 0x0*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Total: ${jogo.pressao.toFixed(2)} | Dominante: ${equipa}\n🔬 AtqP Combinado: ${atqCombinado} | Qualidade máx: ${(Math.max(qualCasa,qualFora)*100).toFixed(0)}%\n💡 Pressão crescente — lay no 0-0`;
-                    require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "LAY_0x0");
-                }
-            }
-        }
 
         // ─────────────────────────────────────────────────────────────────
         // MÉTODO 7 — LAY 0x1: Casa perde 0-1 e pressiona (20'–82')
@@ -383,8 +359,8 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (qualCasa < 0.20) analyzer.addMissing('LAY_0x1', 'qualidadeBaixa - Qualidade do ataque ≥ 20%', Math.round(qualCasa*100));
         analyzer.addExpected('LAY_0x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
         if (acCasa <= 0) analyzer.addMissing('LAY_0x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
-        analyzer.addExpected('LAY_0x1', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
-        if (!xgCompetitivo0x1) analyzer.addMissing('LAY_0x1', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
+        analyzer.addExpected('LAY_0x1', 'xgIncompativel - xG compatível com pressão', (jogo.xgCasa || 0).toFixed(2));
+        if (!xgCompetitivo0x1) analyzer.addMissing('LAY_0x1', 'xgIncompativel - xG compatível com pressão', (jogo.xgCasa || 0).toFixed(2));
         if (!emCooldown && !alertas.lay01 && minAtual >= 20 && minAtual <= 82) {
             if (gC === 0 && gF === 1) {
                 const xgCompetitivo = jogo.xgFora > 0
@@ -423,8 +399,8 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (qualFora < 0.20) analyzer.addMissing('LAY_1x0', 'qualidadeBaixa - Qualidade do ataque >= 0.20', Math.round(qualFora*100));
         analyzer.addExpected('LAY_1x0', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
         if (acFora <= 0) analyzer.addMissing('LAY_1x0', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
-        analyzer.addExpected('LAY_1x0', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
-        if (!xgCompetitivo1x0) analyzer.addMissing('LAY_1x0', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
+        analyzer.addExpected('LAY_1x0', 'xgIncompativel - xG compatível com pressão', (jogo.xgFora || 0).toFixed(2));
+        if (!xgCompetitivo1x0) analyzer.addMissing('LAY_1x0', 'xgIncompativel - xG compatível com pressão', (jogo.xgFora || 0).toFixed(2));
         if (!emCooldown && !alertas.lay10 && minAtual >= 20 && minAtual <= 82) {
             if (gC === 1 && gF === 0) {
                 const xgCompetitivo = jogo.xgCasa > 0
@@ -466,8 +442,8 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (qualCasa < 0.22) analyzer.addMissing('LAY_1x2', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualCasa*100));
         analyzer.addExpected('LAY_1x2', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
         if (acCasa <= 0) analyzer.addMissing('LAY_1x2', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acCasa);
-        analyzer.addExpected('LAY_1x2', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
-        if (!xgCompetitivo1x2) analyzer.addMissing('LAY_1x2', 'xgIncompativel - xG compatível com pressão', jogo.xgCasa);
+        analyzer.addExpected('LAY_1x2', 'xgIncompativel - xG compatível com pressão', (jogo.xgCasa || 0).toFixed(2));
+        if (!xgCompetitivo1x2) analyzer.addMissing('LAY_1x2', 'xgIncompativel - xG compatível com pressão', (jogo.xgCasa || 0).toFixed(2));
         if (!emCooldown && !alertas.lay12 && minAtual >= 20 && minAtual <= 72) {
             if (gC === 1 && gF === 2) {
                 const xgCompetitivo = jogo.xgFora > 0
@@ -507,8 +483,8 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         if (qualFora < 0.22) analyzer.addMissing('LAY_2x1', 'qualidadeBaixa - Qualidade do ataque ≥ 22%', Math.round(qualFora*100));
         analyzer.addExpected('LAY_2x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
         if (acFora <= 0) analyzer.addMissing('LAY_2x1', 'aceleracaoNegativa - Aceleração > 0 (crescimento)', acFora);
-        analyzer.addExpected('LAY_2x1', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
-        if (!xgCompetitivo2x1) analyzer.addMissing('LAY_2x1', 'xgIncompativel - xG compatível com pressão', jogo.xgFora);
+        analyzer.addExpected('LAY_2x1', 'xgIncompativel - xG compatível com pressão', (jogo.xgFora || 0).toFixed(2));
+        if (!xgCompetitivo2x1) analyzer.addMissing('LAY_2x1', 'xgIncompativel - xG compatível com pressão', (jogo.xgFora || 0).toFixed(2));
         if (!emCooldown && !alertas.lay21 && minAtual >= 20 && minAtual <= 72) {
             if (gC === 2 && gF === 1) {
                 const xgCompetitivo = jogo.xgCasa > 0

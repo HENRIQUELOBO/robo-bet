@@ -329,8 +329,14 @@
             if (!modal || !content) return;
             // find jogo in latest payload
             const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
-            // debug: log raw analysis to browser console for inspection
-            try { console.log('[CLIENT] toggleAnalysis jogo.engineAnalysis:', jogo && jogo.engineAnalysis, 'jogo.tempo=', jogo && jogo.tempo); } catch(_){ }
+            // debug: log raw analysis to browser console for inspection (safe stringify)
+            try {
+                const raw = jogo && jogo.engineAnalysis ? jogo.engineAnalysis : null;
+                // attempt pretty stringify, but avoid circular errors
+                let dumped = raw;
+                try { dumped = JSON.stringify(raw, null, 2); } catch (e) { dumped = String(raw); }
+                console.log('[CLIENT] toggleAnalysis -> jogoId:', jogo && jogo.id, 'nome:', jogo && jogo.nomePartida, 'tempo:', jogo && jogo.tempo, '\nengineAnalysis:', dumped);
+            } catch (_) { /* non-fatal debug */ }
             if (!jogo || !jogo.engineAnalysis) {
                 content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
                 try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
@@ -409,21 +415,25 @@
             // friendly mapping for criteria codes
             const friendly = {
                 emCooldown: 'Em cooldown após golo (aguardar)',
-                janelaTempo: '',
+                janelaTempo: 'Tempo de Jogo',
+                'dominancia<2.0': 'Dominancia time (min 2)',
+                'apmDominante<0.8': 'APM dominante (min 0.8)',
+                'atqDominante<8': 'Ataques do time dominante (min 8)',
                 'difGols>1': 'Diferença de golos alta (não elegível)',
+                'qualDominante>=18%': 'Qualidade do ataque (time dominante) — mín 18%',
+                'posseConfirma': 'Posse confirmatória (mín 55%)',
                 'difGols>0': 'Diferença de golos > 0 — equipa em vantagem (não elegível para gatilho)',
-                difGolsFora: 'Diferença de golos fora do intervalo permitido',
-                'ataquesCasa<10': 'Ataque da casa necessário (mín ≥ 10 ataques perigosos)',
-                'ataquesFora<10': 'Ataques Fora insuficientes (min 10)',
-                'chutesNoAlvoCasa<2': 'Chute no alvo necessário (Casa) — mínimo 2 chutes ao alvo',
-                'chutesNoAlvoFora<2': 'Chute no alvo necessário (Fora) — mínimo 2 chutes ao alvo',
+                'difGolsFora': 'Diferença de golos fora do intervalo permitido',
+                'ataquesCasa<10': 'Ataques Perigosos(mín 10)',
+                'ataquesFora<10': 'Ataques Perigosos(min 10)',
+                'chutesNoAlvoCasa<2': 'Chute no alvo(min 2)',
+                'chutesNoAlvoFora<2': 'Chute no alvo(min 2)',
                 aceleracaoNegativa: 'Aceleração negativa (sem crescimento)',
-                qualidadeBaixa: 'Qualidade do ataque baixa (percentual)',
-                difGolsFora: 'Placar fora dos requisitos do método',
-                'chutesNoAlvoCasa+escanteios<3': 'Chute no alvo necessário (Casa) — chutes ao alvo + escanteios < 3',
-                'chutesNoAlvoFora+escanteios<3': 'Chutes ao alvo + escanteios (Fora) abaixo de 3',
-                'ataquesCasa<12': 'Ataques Casa abaixo do mínimo exigido (min 12) — insuficiente para pressionar',
-                'ataquesFora<12': 'Ataques Fora insuficientes (min 12)'
+                qualidadeBaixa: 'Qualidade do ataque baixa',
+                'chutesNoAlvoCasa+escanteios<3': 'Chute no alvo + Escanteios(min 3)',
+                'chutesNoAlvoFora+escanteios<3': 'Chutes ao alvo + Escanteios(min 3)',
+                'ataquesCasa<12': 'Ataques Perigosos(min 12)',
+                'ataquesFora<12': 'Ataques Perigosos(min 12)'
             };
 
             // Período de tempo (janela) por método — exibido no cabeçalho para clareza
@@ -432,8 +442,7 @@
                 'GATILHO_1T_FORA': "Janela: 15'–40'",
                 'GATILHO_2T': "Janela: 46'–85'",
                 'GATILHO_2T_FORA': "Janela: 46'–85'",
-                'LAY_DRAW': "Janela: 25'–78'",
-                'LAY_0x0': "Janela: 20'–65'",
+                'LAY_DRAW': "Janela: 25'–80'",
                 'LAY_0x1': "Janela: 20'–82'",
                 'LAY_1x0': "Janela: 20'–82'",
                 'LAY_1x2': "Janela: 20'–72'",
@@ -450,12 +459,11 @@
                 'GATILHO_2T': ['janelaTempo', 'ataquesCasa<12', 'chutesNoAlvoCasa+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
                 'GATILHO_2T_FORA': ['janelaTempo', 'ataquesFora<12', 'chutesNoAlvoFora+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
                 'LAY_DRAW': ['janelaTempo', 'empate', 'dominancia<2.0', 'apmDominante<0.8', 'atqDominante<8', 'qualidadeBaixa'],
-                'LAY_0x0': ['janelaTempo', 'gols!=0-0', 'pressao<1.0', 'atqCombinado<8', 'qualidadeBaixa'],
                 'LAY_0x1': ['janelaTempo', 'placar!=0-1', 'apmCasa<0.6', 'ataquesCasa<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
                 'LAY_1x0': ['janelaTempo', 'placar!=1-0', 'apmFora<0.6', 'ataquesFora<6', 'chutes+esc<2', 'qualidadeBaixa', 'aceleracaoNegativa'],
                 'LAY_1x2': ['janelaTempo', 'placar!=1-2', 'apmCasa<0.8', 'ataquesCasa<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
                 'LAY_2x1': ['janelaTempo', 'placar!=2-1', 'apmFora<0.8', 'ataquesFora<8', 'chutes+esc<3', 'qualidadeBaixa', 'aceleracaoNegativa'],
-                'LAY_1x1': ['janelaTempo', 'placar!=1-1', 'pressao<1.0', 'atqCombinado<10', 'chutesCombinados<2', 'ratio<1.8', 'qualidadeBaixa']
+                'LAY_1x1': ['janelaTempo', 'placar!=1-1', 'Pressão maior que 1.0', 'atqCombinado<10', 'chutesCombinados<2', 'ratio<1.8', 'qualidadeBaixa']
             };
 
             let html = '';
@@ -465,6 +473,8 @@
             const hideFirstHalf = minAtual > 45; // if in second half hide first-half-only methods
             const firstHalfMethods = new Set(['GATILHO_1T','GATILHO_1T_FORA']);
             for (const method in analysis) {
+                // omit legacy / removed methods that may still appear in stored analysis
+                if (String(method).toUpperCase() === 'LAY_0X0') continue;
                 if (hideFirstHalf && firstHalfMethods.has(method)) continue;
                 const entry = analysis[method] || { met: false, missing: [] };
                 const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
@@ -539,7 +549,17 @@
                                     // derive crit key before any separator like ' - ', ' (' or ':'
                                     crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
                                 }
-                                const friendlyText = friendly[crit] || crit;
+                                // tolerant friendly lookup: try exact key, then substring matches
+                                let friendlyText = friendly[crit] || null;
+                                if (!friendlyText) {
+                                    // try common substrings to match keys like 'apmDominante' -> 'apmDominante<0.8'
+                                    for (const fk of Object.keys(friendly)) {
+                                        try {
+                                            if (String(crit).toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase())) { friendlyText = friendly[fk]; break; }
+                                        } catch(_) {}
+                                    }
+                                }
+                                if (!friendlyText) friendlyText = crit;
                                 // format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
                                 let line = friendlyText;
                                 // Special formatting for chutesNoAlvoCasa<2: show required minimum (from criterion) and current value
@@ -549,22 +569,52 @@
                                     const minReq = m ? m[1] : null;
                                     const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
                                     if (minReq) {
-                                        line = `Chute no alvo necessário (Casa) — mínimo ${minReq} chutes ao alvo (Atual: ${atual})`;
+                                        line = `Chute no alvo(min ${minReq})(valor: ${atual})`;
                                     } else {
                                         line = `${friendlyText} (Atual: ${atual})`;
                                     }
-                                } else {
-                                    let suffix = '';
-                                    if (value !== null && value !== undefined && value !== '') {
-                                        if (crit === 'qualidadeBaixa' || String(crit).toLowerCase().includes('qualidade')) {
-                                            suffix = ` (valor: ${String(value)}%)`;
-                                        } else if (crit === 'janelaTempo') {
-                                            suffix = ` (valor: ${String(value)})`;
-                                        } else {
-                                            suffix = ` (valor: ${String(value)})`;
+                                    } else {
+                                        let suffix = '';
+                                        if (value !== null && value !== undefined && value !== '') {
+                                            const critLower = String(crit).toLowerCase();
+                                            // qualidade percent
+                                            if (crit === 'qualidadeBaixa' || critLower.includes('qualidade')) {
+                                                suffix = ` - Valor atual: ${String(value)}%`;
+                                            } else if (crit === 'janelaTempo') {
+                                                suffix = ` - Valor atual: ${String(value)}`;
+                                            } else if (critLower.startsWith('ratio') || critLower.includes('ratio')) {
+                                                const num = parseFloat(value);
+                                                const v = Number.isFinite(num) ? num.toFixed(2) : value;
+                                                suffix = ` - Valor atual: ${v}`;
+                                            } else if (critLower.startsWith('placar') || critLower.includes('placar')) {
+                                                suffix = ` - Valor atual: ${String(value)}`;
+                                            } else if (critLower.includes('pressao') || critLower.startsWith('pressao')) {
+                                                const numP = parseFloat(value);
+                                                const vp = Number.isFinite(numP) ? numP.toFixed(2) : value;
+                                                suffix = ` - Valor atual: ${vp}`;
+                                            } else if (critLower.includes('dominancia') || critLower.startsWith('dominancia') || critLower.includes('apmdominante')) {
+                                                // APM / dominância: format to 2 decimals
+                                                const numD = parseFloat(value);
+                                                const vd = Number.isFinite(numD) ? numD.toFixed(2) : value;
+                                                suffix = ` - Valor atual: ${vd}`;
+                                            } else if (critLower.includes('atq') || critLower.includes('ataques') || critLower.includes('ataque') || critLower.includes('atqdominante') || critLower.includes('atqdominante')) {
+                                                // attacks: integer display
+                                                const numA = parseInt(value, 10);
+                                                const va = Number.isFinite(numA) ? String(numA) : String(value);
+                                                suffix = ` - Valor atual: ${va}`;
+                                            } else {
+                                                suffix = ` - Valor atual: ${String(value)}`;
+                                            }
                                         }
+                                        line = friendlyText + suffix;
                                     }
-                                    line = friendlyText + suffix;
+                                // If criterion is placar!=..., override friendly text to readable form
+                                if (String(crit).startsWith('placar')) {
+                                    const atual = (value !== null && value !== undefined && value !== '') ? String(value) : 'N/D';
+                                    // try to extract expected score from crit like 'placar!=1-1' or 'placar!= 1-1'
+                                    const expectMatch = String(crit).match(/!=\s*([0-9]+-[0-9]+)/);
+                                    const expected = expectMatch ? expectMatch[1] : (String(crit).match(/([0-9]+-[0-9]+)/) || [null, '1-1'])[1];
+                                    line = `Placar exato ${expected} - Valor atual: ${atual}`;
                                 }
                                 html += `<li class="text-red-400">${line}</li>`;
                             }

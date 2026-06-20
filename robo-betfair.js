@@ -556,6 +556,8 @@ async function iniciarRobo() {
 
                     if (r.posseC > 0) { jogo.posseBolaCasa = r.posseC; jogo.posseBolaFora = r.posseF; }
                     if (r.momentumSrc) jogo.sofascoreMomentumUrl = r.momentumSrc;
+                    // registra telemetria contínua (arquivo em log/telemetria)
+                    try { logger.registrarTelemetriaContinua(jogo); } catch (e) { /* non-fatal */ }
                 }
 
                 // Invoca as validações do Motor Matemático e escrita em disco local
