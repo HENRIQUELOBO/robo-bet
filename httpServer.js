@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+// Load .env into process.env for local development
+try { require('dotenv').config(); } catch(e) { /* optional */ }
 
 module.exports = (props) => {
     const {clientesSSE, getDadosUltimosJogos, _callbackAdicionarJogo, _screenshotsMomentum} = props;

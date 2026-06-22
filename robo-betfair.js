@@ -1,3 +1,5 @@
+// Load .env into process.env for local development
+try { require('dotenv').config(); } catch(e) { /* optional */ }
 const puppeteer = require('puppeteer');
 const readline  = require('readline');
 
@@ -61,10 +63,23 @@ function renderizarPainelTerminal() {
 }
 
 async function iniciarRobo() {
+    // Puppeteer: add extra flags for WSL/headless environments and allow overriding executable via CHROME_PATH
+    const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--single-process',
+        '--no-zygote',
+        '--disable-accelerated-2d-canvas',
+        '--disable-features=VizDisplayCompositor'
+    ];
+    const execPath = process.env.CHROME_PATH || undefined;
     const browser = await puppeteer.launch({
         headless: true,
         defaultViewport: null,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
+        args: launchArgs,
+        executablePath: execPath
     });
 
     console.log(`\n🤖 ENGINE DE TELEMETRIA MODULAR PRONTA!`);
@@ -118,59 +133,60 @@ async function iniciarRobo() {
                 await iframeEl.evaluate(el => el.scrollIntoView({ block: 'nearest' }));
                 await new Promise(r => setTimeout(r, 1200));
 
-                // --- Aceitar possíveis termos de privacidade / cookie consent antes do screenshot
-                // Muitos sites mostram um modal/alerta que fica sobreposto ao iframe e aparece no print.
-                // Tentamos clicar em botões comuns de aceitação tanto no contexto da página quanto dentro do iframe (se acessível).
+                // --- Fechar aviso de privacidade específico antes do screenshot
+                // O site usa a seguinte estrutura de modal (exemplo):
+                // <div class="cm cm--box cm--bottom cm--right" ...>
+                //   ... <button class="cm__btn" data-role="all"><span>Aceitar todos</span></button>
+                // </div>
                 try {
-                    const acceptSelectors = [
-                        'button[aria-label*="accept"]',
-                        'button[aria-label*="Aceitar"]',
-                        'button[aria-label*="Aceitar tudo"]',
-                        'button[class*="accept"]',
-                        'button[class*="agree"]',
-                        'button[class*="cookie"]',
-                        'button[class*="consent"]',
-                        'button:contains("Aceitar")',
-                        'button:contains("Accept")',
-                        'button:contains("Concordo")',
-                        '.cookie-consent button',
-                        '.gdpr-accept',
-                        '#onetrust-accept-btn-handler',
-                        '.onetrust-accept-btn-handler'
-                    ];
+                    // tenta clicar no botão 'Aceitar todos' usando seletor exato
+                    const clicked = await jogo.pageContext.evaluate(() => {
+                        try {
+                            const sel = 'div.cm.cm--box.cm--bottom.cm--right button[data-role="all"], button.cm__btn[data-role="all"]';
+                            const btn = document.querySelector(sel);
+                            if (btn) { try { btn.click(); } catch(e){}; return true; }
+                            return false;
+                        } catch(e) { return false; }
+                    }).catch(() => false);
 
-                    // Função para tentar clicar selectors no contexto da page
-                    const tryClickOnPage = async (page, selectors) => {
-                        for (let sel of selectors) {
-                            try {
-                                const exists = await page.$(sel);
-                                if (exists) {
-                                    await page.evaluate(s => {
-                                        const el = document.querySelector(s);
-                                        if (el) { el.click(); }
-                                    }, sel);
-                                    await new Promise(r => setTimeout(r, 600));
-                                    return true;
+                    if (!clicked) {
+                        // tenta também dentro do iframe se for acessível
+                        try {
+                            const frame = await iframeEl.contentFrame();
+                            if (frame) {
+                                const clickedInFrame = await frame.evaluate(() => {
+                                    try {
+                                        const sel = 'div.cm.cm--box.cm--bottom.cm--right button[data-role="all"], button.cm__btn[data-role="all"]';
+                                        const btn = document.querySelector(sel);
+                                        if (btn) { try { btn.click(); } catch(e){}; return true; }
+                                        return false;
+                                    } catch(e) { return false; }
+                                }).catch(() => false);
+                                if (!clickedInFrame) {
+                                    // como fallback, remove o nó do banner para evitar sobreposição
+                                    await jogo.pageContext.evaluate(() => {
+                                        try {
+                                            const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
+                                            if (node && node.parentElement) node.parentElement.removeChild(node);
+                                        } catch(e){}
+                                    }).catch(() => {});
                                 }
-                            } catch (e) { /* ignora */ }
+                            } else {
+                                // se não houver frame ou não for acessível, remova o banner do contexto principal
+                                await jogo.pageContext.evaluate(() => {
+                                    try {
+                                        const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
+                                        if (node && node.parentElement) node.parentElement.removeChild(node);
+                                    } catch(e){}
+                                }).catch(() => {});
+                            }
+                        } catch (e) {
+                            // fallback: tenta remover diretamente do contexto principal
+                            try { await jogo.pageContext.evaluate(() => { const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right'); if (node && node.parentElement) node.parentElement.removeChild(node); }); } catch(_){}
                         }
-                        return false;
-                    };
-
-                    // Tenta no contexto da página principal
-                    await tryClickOnPage(jogo.pageContext, acceptSelectors).catch(() => {});
-
-                    // Tenta também dentro do iframe caso seja acessível (cross-origin pode falhar)
-                    try {
-                        const frame = await iframeEl.contentFrame();
-                        if (frame) {
-                            await tryClickOnPage(frame, acceptSelectors).catch(() => {});
-                        }
-                    } catch (e) {
-                        // Se não for possível acessar o frame, ignora (cross-origin)
                     }
                 } catch (e) {
-                    // Não fatal — seguimos para o screenshot mesmo que não tenha sido possível clicar
+                    // não fatal — seguimos para o screenshot mesmo que não tenha sido possível fechar o banner
                 }
 
                 const box = await iframeEl.boundingBox();

@@ -13,7 +13,10 @@ const pendentes = new Map();
 // registra sinal pendente vindo do logger
 function registrarSinalPendente(signal) {
     if (!signal || !signal.id) return;
-    pendentes.set(signal.id, { ...signal, criadoEm: Date.now() });
+    // store normalized placar (trim spaces) for robust comparisons
+    const placarNorm = (signal.placar || '').toString().replace(/\s+/g,'').trim();
+    pendentes.set(signal.id, { ...signal, placar: placarNorm, criadoEm: Date.now() });
+    console.log(`[MONITOR] sinal pendente registrado: id=${signal.id} jogoId=${signal.jogoId} metodo=${signal.metodo} placar=${placarNorm}`);
 }
 
 // helper para atualizar a linha do CSV trocando STATUS e adicionando tempoResultado
@@ -93,10 +96,13 @@ function onJogoAtualizado(jogo) {
             // decide: se placar mudou desde emissão e favorável => GREEN; se adversário marcou => RED
             const placarAntes = s.placar || '';
             const placarAgora = jogo.placar || '';
-            if (placarAntes !== placarAgora) {
+            // normalize placar strings (possible formats: '0-0', '0 - 0')
+            const normAntes = (placarAntes || '').toString().replace(/\s+/g,'').trim();
+            const normAgora = (placarAgora || '').toString().replace(/\s+/g,'').trim();
+            if (normAntes !== normAgora) {
                 // parse placar "gC-gF"
-                const pa = (placarAntes || '0-0').split('-').map(Number);
-                const pb = (placarAgora || '0-0').split('-').map(Number);
+                const pa = (normAntes || '0-0').split('-').map(x => parseInt(x,10) || 0);
+                const pb = (normAgora || '0-0').split('-').map(x => parseInt(x,10) || 0);
                 const gCAnt = pa[0]||0; const gFAnt = pa[1]||0;
                 const gCNow = pb[0]||0; const gFNow = pb[1]||0;
                 // if home scored and before home was dominant assume GREEN for home signals
@@ -109,6 +115,7 @@ function onJogoAtualizado(jogo) {
                 const metodoLow = (s.metodo || '').toLowerCase();
                 const antesFoiEmpate = (gCAnt === gFAnt);
                 const agoraEhEmpate = (gCNow === gFNow);
+                console.log(`[MONITOR] detectado alteração placar para sinal ${id}: antes=${normAntes} agora=${normAgora} (metodo=${s.metodo})`);
                 // Stronger rule for LAY_DRAW: if draw state changed (either draw->not-draw or not-draw->draw)
                 // resolve immediately: draw->not-draw = GREEN (lay succeeded), not-draw->draw = RED (lay failed)
                 if (metodoLow.includes('draw') || metodoLow.includes('lay_draw') || metodoLow.includes('lay draw')) {

@@ -17,6 +17,8 @@ let _callbackAdicionarJogo = null;
 const _sharedUpdateCallback = { fn: null };
 // Mapa de screenshots momentum: { [jogoId]: base64String }
 const _screenshotsMomentum = new Map();
+// store last signal info per jogoId so frontend can show message/timestamp
+const _lastSignals = new Map();
 
 // Shared mutable holder so httpServer can call the callback even if it's registered later
 const _sharedCallback = { fn: null };
@@ -122,6 +124,8 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
             sofascoreMomentumImg: jogo.sofascoreMomentumImg || null
             ,
             engineAnalysis: jogo._engineAnalysis || null
+            ,
+            lastSignal: _lastSignals.get(String(id)) || null
         });
     }
     dadosUltimosJogos = listaJogos;
@@ -190,16 +194,6 @@ async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
         process.stderr.write(`[LOGGER ERROR] enviarAlertaTelegram (local write): ${e.message}\n`);
     }
 
-    // Notify monitor in-memory (non-blocking) so it can start observing this signal
-    try {
-        const monitor = require('./monitor_results');
-        if (monitor && typeof monitor.registrarSinalPendente === 'function') {
-            monitor.registrarSinalPendente({ id: signalId, jogoId: idJogo, metodo: metodoAtivado, tempoEmissao: jogo.tempo, placar: jogo.placar });
-        }
-    } catch (ignore) {
-        // ignore if monitor not present or errors during require
-    }
-
     // Ensure message includes placar for easier traceability in telegram
     let mensagemParaEnviar = mensagem;
     try {
@@ -212,6 +206,22 @@ async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
     } catch (e) {
         // ignore formatting errors
     }
+
+    // Notify monitor in-memory (non-blocking) so it can start observing this signal
+    try {
+        const monitor = require('./monitor_results');
+        if (monitor && typeof monitor.registrarSinalPendente === 'function') {
+            monitor.registrarSinalPendente({ id: signalId, jogoId: idJogo, metodo: metodoAtivado, tempoEmissao: jogo.tempo, placar: jogo.placar });
+        }
+    } catch (ignore) {
+        // ignore if monitor not present or errors during require
+    }
+
+    // store last signal snapshot so UI can display message/timestamp
+    try {
+        _lastSignals.set(String(idJogo), { id: signalId, ts: Date.now(), mensagem: mensagemParaEnviar });
+    } catch (e) { /* non-fatal */ }
+
 
     // If Telegram token is configured, also send the message to Telegram (best-effort)
     if (config.TELEGRAM_TOKEN && config.TELEGRAM_TOKEN !== 'SEU_BOT_TOKEN_AQUI') {

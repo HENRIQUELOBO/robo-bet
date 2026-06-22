@@ -26,7 +26,7 @@
   </style>
 </head>
 <body>
-  <!-- Menu / Navegação -->
+
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
     <a href="/" style="color:#e6eef8;text-decoration:none;font-weight:700">Home</a>
     <a href="dashboard" style="color:#ffd27a;text-decoration:none;font-weight:700">Dashboard</a>
@@ -50,7 +50,7 @@
   </div>
 
 <script>
-let totalsOrderAsc = true; // true => ascending by pct
+let totalsOrderAsc = true;
 async function carregar(){
   const r = await fetch('/api/historico');
   const j = await r.json();

@@ -35,7 +35,8 @@
       // the deterministic JSON-serving routes even if another process answers :3000
       // Use same-origin API endpoints; fallback to helper server on 3001 if needed
       const paths = ['/api/reports/telemetry_report_compact.json', '/api/reports/telemetry_report.json'];
-      const fallbackHost = 'http://localhost:3000';
+      // prefer same-origin; fallback to current origin (useful when served behind a proxy)
+      const fallbackHost = window.location.origin;
       let data = null;
       let lastErr = null;
       const cacheBust = '?_=' + Date.now();
