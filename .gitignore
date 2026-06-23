@@ -2,5 +2,5 @@ telemetria*
 node_modules
 ./log/telemetria
 .idea
-historico_gatilhos*
+historico_gatilhos.csv
 .env
