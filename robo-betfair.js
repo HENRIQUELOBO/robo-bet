@@ -227,12 +227,6 @@ async function iniciarRobo() {
                     return shot;
                 };
 
-                // First try: single attempt (fast path)
-                try {
-                    const first = await takeOne();
-                    if (first) candidates.push(first);
-                } catch (_) { }
-
                 // If first is missing or too small, perform repeated 1s captures for a short window
                 try {
                     const firstSizeKB = (candidates[0] || '').length / 1024 || 0;
@@ -253,11 +247,7 @@ async function iniciarRobo() {
                     continue;
                 }
 
-                // Strategy: take multiple quick snapshots (1s interval) for a short window and pick the best
-                // This reduces the chance of capturing during finalizing redraws. We keep the existing
-                // iframe element screenshot preference but will take several attempts and choose the
-                // largest non-blank image.
-                const extraRetriesIfSmall = 10; // extra attempts if best < minKb (allow more retries on slow servers)
+                const extraRetriesIfSmall = 10;
 
                 let best = null; bestSize = 0;
                 for (let c of candidates) {
@@ -271,7 +261,6 @@ async function iniciarRobo() {
                 }
 
                 if (!best || bestSize < minKb) {
-                    // If the best candidate is smaller than desired, perform a few extra attempts
                     process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: melhor candidata pequena (${bestSize.toFixed(1)}KB) — tentando ${extraRetriesIfSmall} tentativas extras\n`);
                     for (let r = 0; r < extraRetriesIfSmall; r++) {
                         await new Promise(res => setTimeout(res, tryIntervalMs));
