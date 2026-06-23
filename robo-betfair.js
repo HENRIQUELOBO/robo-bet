@@ -204,8 +204,8 @@ async function iniciarRobo() {
                 }
 
                 const tryWindowSeconds = 8;
-                const tryIntervalMs = 1000;
-                const minKb = 20;
+                const tryIntervalMs = 700; // 700ms between attempts
+                const minKb = 30; // require at least 30KB now
 
                 const candidates = [];
 
@@ -257,7 +257,7 @@ async function iniciarRobo() {
                 // This reduces the chance of capturing during finalizing redraws. We keep the existing
                 // iframe element screenshot preference but will take several attempts and choose the
                 // largest non-blank image.
-                const extraRetriesIfSmall = 5; // extra attempts if best < minKb
+                const extraRetriesIfSmall = 8; // extra attempts if best < minKb
 
                 let best = null; bestSize = 0;
                 for (let c of candidates) {
