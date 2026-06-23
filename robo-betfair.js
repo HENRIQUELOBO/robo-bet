@@ -136,10 +136,6 @@ async function iniciarRobo() {
 
                 }
 
-                // Instead of trying to compute a tight clip (which can fail due to cross-origin
-                // iframes or transient layout), capture the full page after a short delay.
-                // We still attempt iframeEl.screenshot() first (may work for same-origin),
-                // but fallback to a fullPage screenshot so we reliably get an image.
                 const tryDelayMs = 2000; // tempo de espera antes da captura — ajuste no servidor se necessário
                 await new Promise(r => setTimeout(r, tryDelayMs));
 
@@ -171,7 +167,7 @@ async function iniciarRobo() {
 
             if (jogo._encerrando) continue;
         }
-    }, 30000);
+    }, 10000);
 
     logger.registrarCallbackAdicionarJogo(async (urlValida) => {
         const idJogo_unico = String(urlValida.split('/').pop() || Date.now());
