@@ -93,33 +93,12 @@ async function iniciarRobo() {
                     continue;
                 }
 
-                let iframeEl = await jogo.pageContext.$(`#sofascore-momentum-${idJogo}`);
-                if (!iframeEl) {
-                    const frames = await jogo.pageContext.$$('iframe');
-                    for (let f of frames) {
-                        try {
-                            const srcHandle = await f.getProperty('src');
-                            const src = srcHandle ? await srcHandle.jsonValue() : null;
-                            if (src && String(src).includes(String(idJogo))) {
-                                iframeEl = f;
-                                break;
-                            }
-                        } catch (e) { /* ignora erros ao ler src */
-                        }
-                    }
-                }
-
-                if (!iframeEl) {
-                    const lista = await jogo.pageContext.$$eval('iframe', els =>
-                        els.map(e => e.id || e.name || e.src).filter(Boolean)
-                    );
-                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: iframe específico sofascore-momentum-${idJogo} não encontrado. IDs/src na página: ${JSON.stringify(lista)}\n`);
-                    continue;
-                }
-
-                await jogo.pageContext.waitForNetworkIdle({idleTime: 800, timeout: 5000}).catch(() => {
-                });
-                await iframeEl.evaluate(el => el.scrollIntoView({block: 'nearest'}));
+                // Instead of searching for a specific iframe selector (which can be brittle
+                // when the widget is cross-origin or the page structure changes), capture
+                // the full page. This avoids selector-related misses and guarantees an
+                // image is produced when the page is loaded.
+                // We keep a small wait to allow dynamic content to render.
+                await jogo.pageContext.waitForNetworkIdle({idleTime: 800, timeout: 5000}).catch(() => {});
                 await new Promise(r => setTimeout(r, 1200));
 
                 try {
@@ -142,56 +121,16 @@ async function iniciarRobo() {
                     }).catch(() => false);
 
                     if (!clicked) {
-                        try {
-                            const frame = await iframeEl.contentFrame();
-                            if (frame) {
-                                const clickedInFrame = await frame.evaluate(() => {
-                                    try {
-                                        const sel = 'div.cm.cm--box.cm--bottom.cm--right button[data-role="all"], button.cm__btn[data-role="all"]';
-                                        const btn = document.querySelector(sel);
-                                        if (btn) {
-                                            try {
-                                                btn.click();
-                                            } catch (e) {
-                                            }
-                                            ;
-                                            return true;
-                                        }
-                                        return false;
-                                    } catch (e) {
-                                        return false;
-                                    }
-                                }).catch(() => false);
-
-                                if (!clickedInFrame) {
-                                    await jogo.pageContext.evaluate(() => {
-                                        try {
-                                            const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
-                                            if (node && node.parentElement) node.parentElement.removeChild(node);
-                                        } catch (e) {
-                                        }
-                                    }).catch(() => {
-                                    });
-                                }
-                            } else {
-                                await jogo.pageContext.evaluate(() => {
-                                    try {
-                                        const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
-                                        if (node && node.parentElement) node.parentElement.removeChild(node);
-                                    } catch (e) {
-                                    }
-                                }).catch(() => {
-                                });
-                            }
-                        } catch (e) {
+                        // Try removing the floating consent/controls node from the main page
+                        // to avoid it covering the momentum widget.
+                        await jogo.pageContext.evaluate(() => {
                             try {
-                                await jogo.pageContext.evaluate(() => {
-                                    const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
-                                    if (node && node.parentElement) node.parentElement.removeChild(node);
-                                });
-                            } catch (_) {
+                                const node = document.querySelector('div.cm.cm--box.cm--bottom.cm--right');
+                                if (node && node.parentElement) node.parentElement.removeChild(node);
+                            } catch (e) {
+                                // ignore
                             }
-                        }
+                        }).catch(() => {});
                     }
                 } catch (e) {
 
@@ -206,19 +145,8 @@ async function iniciarRobo() {
 
                 const takeSingle = async () => {
                     try {
-                        let shot = null;
-                        try {
-                            shot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
-                        } catch (_) { shot = null; }
-                        if (!shot) {
-                            // Take a full-page screenshot as a robust fallback.
-                            shot = await jogo.pageContext.screenshot({
-                                encoding: 'base64',
-                                type: 'jpeg',
-                                quality: 80,
-                                fullPage: true
-                            }).catch(() => null);
-                        }
+                        // Capture full page to avoid cross-origin or selector issues.
+                        const shot = await jogo.pageContext.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80, fullPage: true }).catch(() => null);
                         return shot;
                     } catch (e) { return null; }
                 };
@@ -887,6 +815,4 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
-
-
 
