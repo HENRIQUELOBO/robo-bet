@@ -2,6 +2,7 @@
 try { require('dotenv').config(); } catch(e) { /* optional */ }
 const puppeteer = require('puppeteer');
 const readline  = require('readline');
+let globalBrowser = null;
 
 // Injeção dos componentes modulares do sistema Lobo Dev
 const engine   = require('./engine_quant');
@@ -83,8 +84,7 @@ async function iniciarRobo() {
     });
 
     console.log(`\n🤖 ENGINE DE TELEMETRIA MODULAR PRONTA!`);
-
-
+    globalBrowser = browser;
 
     // ─── LOOP DEDICADO AO SCREENSHOT (a cada 30s, independente do loop principal) ───
     setInterval(async () => {
@@ -669,7 +669,25 @@ async function iniciarRobo() {
     });
 }
 
+async function _gracefulShutdown(signal) {
+    try {
+        console.log(`[betfair] ${signal} recebido, encerrando...`);
+        // fecha todas as abas/contexts abertas no pool
+        try {
+            for (let [id, jogo] of poolDeJogos.entries()) {
+                try { jogo._encerrando = true; if (jogo.pageContext && jogo.pageContext.close) await jogo.pageContext.close(); } catch(_){}
+            }
+        } catch(_){}
+        if (globalBrowser) {
+            try { await globalBrowser.close(); } catch(e) { console.warn('[betfair] erro fechando browser:', e && e.message ? e.message : e); }
+            globalBrowser = null;
+        }
+    } catch(e) {}
+    process.exit(0);
+}
+process.on('SIGINT', () => _gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => _gracefulShutdown('SIGTERM'));
+process.on('exit', () => { if (globalBrowser) { try { globalBrowser.close().catch(()=>{}); } catch(_){} globalBrowser = null; } });
+
 iniciarRobo().catch(err => console.error(err));
-
-
 

@@ -1,19 +1,16 @@
-// debug_inspect_radar.js
-// Load environment variables from .env for local configuration
-try { require('dotenv').config(); } catch(e) { /* dotenv optional */ }
+try {
+    require('dotenv').config();
+} catch (_) {
+}
 const puppeteer = require('puppeteer');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const PROCESSED_FILE = path.join(__dirname, 'processed.json');
+const HEADLESS = false;
+const CLICK_DELAY = 1500;
+let globalBrowser = null;
 
-// Configuration
-const HEADLESS = true; // set false for debugging
-const CYCLE_DELAY = 60000;
-const CLICK_DELAY = 5000;
-
-
-// load persisted processed ids
 function loadProcessed() {
     try {
         if (fs.existsSync(PROCESSED_FILE)) {
@@ -21,30 +18,44 @@ function loadProcessed() {
             const arr = JSON.parse(txt || '[]');
             return new Set(arr);
         }
-    } catch (e) { console.warn('[Scout] Não foi possível ler processed.json:', e.message || e); }
+    } catch (e) {
+        console.warn('[Scout] Não foi possível ler processed.json:', e.message || e);
+    }
     return new Set();
 }
 
+let _pendingProcessedSave = null;
+
 function saveProcessedSet(set) {
     try {
-        const arr = Array.from(set);
-        fs.writeFileSync(PROCESSED_FILE, JSON.stringify(arr), 'utf8');
-    } catch (e) { console.warn('[Scout] Erro ao salvar processed.json:', e.message || e); }
+        if (_pendingProcessedSave) clearTimeout(_pendingProcessedSave);
+        _pendingProcessedSave = setTimeout(() => {
+            try {
+                const arr = Array.from(set);
+                fs.writeFile(PROCESSED_FILE, JSON.stringify(arr), 'utf8', (err) => {
+                    if (err) console.warn('[Scout] Erro ao salvar processed.json (async):', err.message || err);
+                });
+            } catch (e) {
+                console.warn('[Scout] Erro ao salvar processed.json (async):', e.message || e);
+            }
+            _pendingProcessedSave = null;
+        }, 1000);
+    } catch (e) {
+        console.warn('[Scout] Erro agendando save de processed.json:', e.message || e);
+    }
 }
 
 async function rodarMinerador() {
     console.log('[Scout] Iniciando Robô Sentinela...');
-    const browser = await puppeteer.launch({ headless: HEADLESS, args: ['--no-sandbox'] });
+    const browser = await puppeteer.launch({headless: HEADLESS, args: ['--no-sandbox']});
+    globalBrowser = browser;
     const page = await browser.newPage();
-    // helper to close/remove cookie/privacy banners that may block the UI
+
     async function closePrivacyModal(pg) {
         try {
             await pg.evaluate(() => {
                 try {
-                    // common button texts to look for (Portuguese & English)
                     const texts = ['aceitar', 'aceito', 'entendi', 'fechar', 'ok', 'aceitar tudo', 'accept', 'close', 'got it'];
-
-                    // 1) try some common selectors
                     const selCandidates = [
                         'button[aria-label*="aceitar" i]',
                         'button[aria-label*="accept" i]',
@@ -58,21 +69,29 @@ async function rodarMinerador() {
                     for (const s of selCandidates) {
                         try {
                             const el = document.querySelector(s);
-                            if (el) { el.click(); return; }
-                        } catch(e){}
+                            if (el) {
+                                el.click();
+                                return;
+                            }
+                        } catch (e) {
+                        }
                     }
-
-                    // 2) scan all buttons for matching innerText
                     const buttons = Array.from(document.querySelectorAll('button'));
                     for (const b of buttons) {
                         try {
                             const t = (b.innerText || '').toLowerCase().trim();
                             if (!t) continue;
-                            for (const m of texts) if (t.includes(m)) { try { b.click(); } catch(e){}; return; }
-                        } catch(e){}
+                            for (const m of texts) if (t.includes(m)) {
+                                try {
+                                    b.click();
+                                } catch (e) {
+                                }
+                                ;
+                                return;
+                            }
+                        } catch (e) {
+                        }
                     }
-
-                    // 3) fallback: remove elements containing privacy/cookie text
                     const candidates = Array.from(document.querySelectorAll('div,section'));
                     for (const node of candidates) {
                         try {
@@ -81,54 +100,75 @@ async function rodarMinerador() {
                                 node.parentElement && node.parentElement.removeChild(node);
                                 return;
                             }
-                        } catch(e){}
+                        } catch (e) {
+                        }
                     }
-                } catch(e){}
+                } catch (e) {
+                }
             });
-            // small wait for UI to reflect changes
             await new Promise(r => setTimeout(r, 250));
         } catch (e) {
-            // ignore errors closing privacy modal
         }
     }
 
-    // use global loaded set if present so exit handler saves the same set
     const processados = processadosGlobal || loadProcessed();
     processadosGlobal = processados;
-    // in-memory set to track items currently being processed in this run
     const inProgress = new Set();
 
-    // Inject navigational interceptors before any script runs
     await page.evaluateOnNewDocument(() => {
-        (function() {
+        (function () {
             window.__lastOpenedUrl = null;
             const _open = window.open;
-            window.open = function(url, name, specs) {
-                try { window.__lastOpenedUrl = typeof url === 'string' ? url : (url && url.toString()); } catch(e){}
+            window.open = function (url, name, specs) {
+                try {
+                    window.__lastOpenedUrl = typeof url === 'string' ? url : (url && url.toString());
+                } catch (e) {
+                }
                 return _open.call(this, url, name, specs);
             };
-
             const wrap = (owner, name) => {
                 try {
                     const orig = owner[name];
-                    owner[name] = function() {
-                        try { const url = arguments[2] || arguments[0]; if (typeof url === 'string') window.__lastOpenedUrl = url; } catch(e){}
+                    owner[name] = function () {
+                        try {
+                            const url = arguments[2] || arguments[0];
+                            if (typeof url === 'string') window.__lastOpenedUrl = url;
+                        } catch (e) {
+                        }
                         return orig.apply(this, arguments);
                     };
-                } catch(e){}
+                } catch (e) {
+                }
             };
-
-            try { wrap(history, 'pushState'); wrap(history, 'replaceState'); } catch(e){}
-
+            try {
+                wrap(history, 'pushState');
+                wrap(history, 'replaceState');
+            } catch (e) {
+            }
             try {
                 const assignOrig = location.assign.bind(location);
-                location.assign = function(url) { try { window.__lastOpenedUrl = url; } catch(e){}; return assignOrig(url); };
-            } catch(e){}
+                location.assign = function (url) {
+                    try {
+                        window.__lastOpenedUrl = url;
+                    } catch (e) {
+                    }
+                    ;
+                    return assignOrig(url);
+                };
+            } catch (e) {
+            }
             try {
                 const replaceOrig = location.replace.bind(location);
-                location.replace = function(url) { try { window.__lastOpenedUrl = url; } catch(e){}; return replaceOrig(url); };
-            } catch(e){}
-
+                location.replace = function (url) {
+                    try {
+                        window.__lastOpenedUrl = url;
+                    } catch (e) {
+                    }
+                    ;
+                    return replaceOrig(url);
+                };
+            } catch (e) {
+            }
             try {
                 const loc = window.location;
                 const proto = Object.getPrototypeOf(loc);
@@ -136,19 +176,154 @@ async function rodarMinerador() {
                 if (desc && desc.set) {
                     const originalSetter = desc.set;
                     Object.defineProperty(loc, 'href', {
-                        set: function(v) { try { window.__lastOpenedUrl = v; } catch(e){}; return originalSetter.call(this, v); },
-                        get: function() { return desc.get.call(this); },
+                        set: function (v) {
+                            try {
+                                window.__lastOpenedUrl = v;
+                            } catch (e) {
+                            }
+                            ;
+                            return originalSetter.call(this, v);
+                        },
+                        get: function () {
+                            return desc.get.call(this);
+                        },
                         configurable: true
                     });
                 }
-            } catch(e){}
+            } catch (e) {
+            }
         })();
     });
 
-    // Network listener to capture radar URLs from API responses
     let lastMatchedUrl = null;
-    // recentDetections to debounce repeated URL detections: url -> ts
     const recentDetections = new Map();
+    let consecutiveSkips = 0;
+    let recoveryAttempts = 0; // count how many recovery reloads we already tried
+
+    // Remove from the page any radar elements that correspond to URLs we already processed.
+    // This prevents re-detection after reload and helps the loop to finish.
+    // If aggressive=true, also remove by jogoId fragment (last path segment) and run broader matching.
+    async function removeProcessedDomNodes(page, processedSet, aggressive = false) {
+        try {
+            const arr = Array.from(processedSet || []);
+            if (!arr || arr.length === 0) return;
+            // Limit to first 200 urls to avoid huge payload into page.evaluate
+            const slice = arr.slice(0, 200);
+            await page.evaluate((urls, aggressiveFlag) => {
+                try {
+                    const norm = (u) => {
+                        try {
+                            return u.replace(/[?#].*$/, '').replace(/\/$/, '');
+                        } catch (e) {
+                            return u;
+                        }
+                    };
+                    const patterns = urls.map(u => norm(u));
+                    // remove anchors and their containing rows that match processed urls
+                    const anchors = Array.from(document.querySelectorAll('a'));
+                    for (const a of anchors) {
+                        try {
+                            if (!a.href) continue;
+                            const h = norm(a.href);
+                            for (const p of patterns) {
+                                if (!p) continue;
+                                if (h.indexOf(p) !== -1 || p.indexOf(h) !== -1) {
+                                    const tr = a.closest('tr');
+                                    if (tr) tr.remove();
+                                    if (a.parentElement) a.parentElement.removeChild(a);
+                                    break;
+                                }
+                            }
+                        } catch (e) {
+                        }
+                    }
+                    // also remove any .radar elements whose inner anchor or data- attributes match
+                    const radares = Array.from(document.querySelectorAll('.radar'));
+                    for (const r of radares) {
+                        try {
+                            const a = r.querySelector('a');
+                            const candidate = (a && a.href) ? norm(a.href) : (r.dataset && (r.dataset.href || r.dataset.url) ? norm(r.dataset.href || r.dataset.url) : null);
+                            if (!candidate) continue;
+                            for (const p of patterns) {
+                                if (!p) continue;
+                                if (candidate.indexOf(p) !== -1 || p.indexOf(candidate) !== -1) {
+                                    const tr = r.closest('tr');
+                                    if (tr) tr.remove();
+                                    if (r.parentElement) r.parentElement.removeChild(r);
+                                    break;
+                                }
+                            }
+                            // aggressive: also match by last path segment (jogoId) or by substring
+                            if (aggressiveFlag) {
+                                try {
+                                    const lastSeg = candidate.split('/').filter(Boolean).pop();
+                                    for (const p of patterns) {
+                                        if (!p) continue;
+                                        const pLast = p.split('/').filter(Boolean).pop();
+                                        if (!pLast) continue;
+                                        if (candidate.includes(pLast) || lastSeg.includes(pLast) || p.includes(lastSeg)) {
+                                            const tr2 = r.closest('tr');
+                                            if (tr2) tr2.remove();
+                                            if (r.parentElement) r.parentElement.removeChild(r);
+                                            break;
+                                        }
+                                    }
+                                } catch (e) {
+                                }
+                            }
+                        } catch (e) {
+                        }
+                    }
+                } catch (e) {
+                }
+            }, slice, aggressive).catch(() => {
+            });
+            await new Promise(r => setTimeout(r, 200));
+        } catch (e) {
+        }
+    }
+
+    // Aggressive removal by a single jogoId fragment. Used when reload keeps re-creating the same rows.
+    async function forceRemoveById(page, jogoId) {
+        try {
+            await page.evaluate((id) => {
+                try {
+                    if (!id) return;
+                    const anchors = Array.from(document.querySelectorAll('a'));
+                    for (const a of anchors) {
+                        try {
+                            if (!a.href) continue;
+                            if (a.href.indexOf(id) !== -1 || a.href.split('/').pop() === id) {
+                                const tr = a.closest('tr');
+                                if (tr) tr.remove();
+                                if (a.parentElement) a.parentElement.removeChild(a);
+                            }
+                        } catch (e) {
+                        }
+                    }
+                    const radares = Array.from(document.querySelectorAll('.radar'));
+                    for (const r of radares) {
+                        try {
+                            const a = r.querySelector('a');
+                            const cand = (a && a.href) ? a.href : (r.dataset && (r.dataset.href || r.dataset.url) ? (r.dataset.href || r.dataset.url) : '');
+                            if (!cand) continue;
+                            if (cand.indexOf(id) !== -1 || cand.split('/').pop() === id) {
+                                const tr = r.closest('tr');
+                                if (tr) tr.remove();
+                                if (r.parentElement) r.parentElement.removeChild(r);
+                            }
+                        } catch (e) {
+                        }
+                    }
+                } catch (e) {
+                }
+            }, String(jogoId)).catch(() => {
+            });
+            await new Promise(r => setTimeout(r, 150));
+        } catch (e) {
+        }
+    }
+
     page.on('response', async (res) => {
         try {
             const url = res.url();
@@ -158,23 +333,20 @@ async function rodarMinerador() {
             const text = await res.text().catch(() => null);
             if (!text) return;
             if (text.toLowerCase().includes('radar') || /\/radar\//i.test(text)) {
-                // find absolute or relative radar url
-                const m = text.match(/https?:\/\/[^"]*radar[^"\s]*/i) || text.match(/\/radar\/[^"'\s\}\]]+/i);
+                const m = text.match(/https?:\/\/[^\"]*radar[^\"\s]*/i) || text.match(/\/radar\/[^\"'\s\}\]]+/i);
                 if (m) {
                     lastMatchedUrl = m[0];
                     console.log('[Scout][NET] Captured radar URL from response:', lastMatchedUrl);
                 }
             }
         } catch (e) {
-            // ignore
         }
     });
 
-    await page.goto('https://www.radarfutebol.com/', { waitUntil: 'networkidle2' });
-    // try to close privacy/cookies banner right after navigation
-    await closePrivacyModal(page).catch(()=>{});
+    await page.goto('https://www.radarfutebol.com/', {waitUntil: 'networkidle2'});
+    await closePrivacyModal(page).catch(() => {
+    });
 
-    // Configurações iniciais (Cookies e Ao Vivo)
     await page.evaluate(() => {
         const btn = document.querySelector('button[data-role="all"]');
         if (btn) btn.click();
@@ -183,394 +355,621 @@ async function rodarMinerador() {
     });
 
     await new Promise(r => setTimeout(r, 5000));
+    // Clean up any already-processed nodes right after initial load so the loop won't re-visit them
+    try {
+        await removeProcessedDomNodes(page, processados);
+    } catch (e) {
+    }
 
-    // util: try to extract url from element using dataset, anchor, or Vue props
     async function extractUrlFromElement(elHandle) {
         return await elHandle.evaluate(el => {
             try {
-                // data-* attributes
                 if (el.dataset) {
-                    const keys = ['href','url','link'];
+                    const keys = ['href', 'url', 'link'];
                     for (const k of keys) if (el.dataset[k]) return el.dataset[k];
                 }
-                // anchor inside
                 const a = el.querySelector && el.querySelector('a');
                 if (a && a.href) return a.href;
-                // Vue 3
                 if (el.__vueParentComponent && el.__vueParentComponent.vnode && el.__vueParentComponent.vnode.props) {
                     const p = el.__vueParentComponent.vnode.props;
-                    if (p.url) return p.url; if (p.href) return p.href;
+                    if (p.url) return p.url;
+                    if (p.href) return p.href;
                 }
-                // Vue 2
                 if (el.__vue__) {
                     const p = el.__vue__.$props || el.__vue__.$options;
                     if (p && (p.url || p.href)) return p.url || p.href;
                 }
-                // try walking up
                 let pnode = el;
-                for (let depth=0; depth<6 && pnode; depth++) {
+                for (let depth = 0; depth < 6 && pnode; depth++) {
                     const v = pnode.__vueParentComponent || pnode.__vue__;
-                    if (v && v.props) { if (v.props.url) return v.props.url; if (v.props.href) return v.props.href; }
+                    if (v && v.props) {
+                        if (v.props.url) return v.props.url;
+                        if (v.props.href) return v.props.href;
+                    }
                     pnode = pnode.parentElement;
                 }
-            } catch(e){}
+            } catch (e) {
+            }
             return null;
         });
     }
 
-    // 2. LOOP DE MONITORAMENTO (Sem recarregar)
-    while (true) {
+    try {
+        console.log(`[${new Date().toLocaleTimeString()}] Monitorando grade existente...`);
         try {
-            console.log(`[${new Date().toLocaleTimeString()}] Monitorando grade existente...`);
+            await page.evaluate(() => {
+                const btn = document.querySelector('button[data-role="all"]');
+                if (btn) btn.click();
+                const liveBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText?.toUpperCase().includes('AO VIVO'));
+                if (liveBtn) liveBtn.click();
+            });
+            await new Promise(r => setTimeout(r, 1000));
+        } catch (e) {
+        }
 
-            // Re-apply "Ao Vivo" filter each cycle to ensure new games are shown
+        const radarElements = await page.$$('tbody tr .radar');
+        const totalRadares = radarElements.length;
+        console.log(`[Scout] Radares ativos na grade: ${totalRadares}`);
+
+        let processedThisCycle = 0;
+        let i = 0;
+        // If the page temporarily runs out of visible games, try scrolling to load more
+        let emptyVisibleCount = 0;
+        // Count consecutive iterations where there are no unprocessed items (end of page)
+        let noUnprocessedLoops = 0;
+        // If we make no progress for several iterations, force a scroll to trigger lazy-loading
+        let loopsSinceProgress = 0;
+        let lastProgressCount = 0;
+        const MAX_EMPTY_SCROLL_ATTEMPTS = 5;
+        while (true) {
             try {
-                await page.evaluate(() => {
-                    const btn = document.querySelector('button[data-role="all"]');
-                    if (btn) btn.click();
-                    const liveBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText?.toUpperCase().includes('AO VIVO'));
-                    if (liveBtn) liveBtn.click();
+                // Check for unprocessed radar elements (not marked data-processed and not data-processing)
+                const unprocessedCount = await page.evaluate(() => {
+                    try {
+                        return document.querySelectorAll('tbody tr .radar:not([data-processed]):not([data-processing])').length || 0;
+                    } catch (e) {
+                        return 0;
+                    }
                 });
-                // small wait for UI to update
-                await new Promise(r => setTimeout(r, 1000));
-            } catch (e) {
-                // ignore
-            }
 
-            const radarElements = await page.$$('tbody tr .radar');
-            const totalRadares = radarElements.length;
-            console.log(`[Scout] Radares ativos na grade: ${totalRadares}`);
+                if (!unprocessedCount || unprocessedCount === 0) {
+                    // no unprocessed items visible: attempt scrolls to load more
+                    noUnprocessedLoops++;
+                    emptyVisibleCount++;
+                    if (emptyVisibleCount > MAX_EMPTY_SCROLL_ATTEMPTS || noUnprocessedLoops > 6) {
+                        // consider end of page reached
+                        console.log('[Scout] Fim aparente da página detectado (sem itens não processados) — saindo.');
+                        break;
+                    }
+                    try {
+                        await page.evaluate(() => {
+                            try {
+                                window.scrollBy({ top: window.innerHeight * 0.9, behavior: 'smooth' });
+                            } catch (e) {}
+                        });
+                    } catch (e) {}
+                    // small wait for DOM to update after scroll
+                    await new Promise(r => setTimeout(r, 700));
+                    continue;
+                }
+                // reset counters when we have unprocessed elements
+                emptyVisibleCount = 0;
+                noUnprocessedLoops = 0;
 
-            // iterate by always picking the first available .radar element and re-querying
-            let processedThisCycle = 0;
-            let i = 0;
-            while (true) {
+                // detect lack of progress: if processedThisCycle hasn't increased, increment loopsSinceProgress
+                if (processedThisCycle === lastProgressCount) {
+                    loopsSinceProgress++;
+                } else {
+                    loopsSinceProgress = 0;
+                    lastProgressCount = processedThisCycle;
+                }
+                // after 3 iterations with no progress, attempt a scroll to load more items
+                if (loopsSinceProgress >= 3) {
+                    // Try a sequence of stronger scroll attempts (multiple small steps)
+                    try {
+                        const prevCount = (await page.$$('tbody tr .radar')).length;
+                        for (let s = 0; s < 4; s++) {
+                            try {
+                                await page.evaluate((step) => { window.scrollBy({ top: window.innerHeight * step, behavior: 'smooth' }); }, 0.4 + s * 0.2);
+                            } catch (e) {}
+                            await new Promise(r => setTimeout(r, 600));
+                            const nowCount = (await page.$$('tbody tr .radar')).length;
+                            if (nowCount > prevCount) break; // new items loaded
+                        }
+                    } catch (e) {}
+                    // small pause to allow any lazy loads to finish
+                    await new Promise(r => setTimeout(r, 900));
+                    loopsSinceProgress = 0;
+                    // re-evaluate elements after aggressive scrolls
+                    continue;
+                }
+
+                // fetch the list of unprocessed element handles and pick the first
+                const elementsNow = await page.$$('tbody tr .radar:not([data-processed]):not([data-processing])');
+                const el = elementsNow && elementsNow.length ? elementsNow[0] : null;
+                if (!el) {
+                    // nothing to process in this iteration; continue loop to allow scroll/retry logic
+                    continue;
+                }
+
+                let urlFinal = await extractUrlFromElement(el);
+
                 try {
-                    const elementsNow = await page.$$('tbody tr .radar');
-                    if (!elementsNow || elementsNow.length === 0) break;
-                    const el = elementsNow[0];
-                    if (!el) break;
-
-                    // 1) try to extract URL directly
-                    let urlFinal = await extractUrlFromElement(el);
-
-                        // If we can extract an ID and it's already processed, skip and remove element
-                        try {
-                            if (urlFinal) {
-                                // we only consider the full normalized URL as the source of truth
-                                if (processados.has(urlFinal)) {
-                                    await el.evaluate(node => node.setAttribute('data-processed','1'));
-                                    await el.evaluate(node => { const tr = node.closest('tr'); if (tr) tr.remove(); });
-                                    continue;
-                                }
-                            } else {
-                                // try to infer an id from the DOM even if url not available yet (anchor href or data attributes)
-                                const inferred = await el.evaluate(node => {
-                                    try {
-                                        const a = node.closest('tr') && node.closest('tr').querySelector('a');
-                                        if (a && a.href) return a.href.split('/').pop();
-                                        if (node.dataset) {
-                                            if (node.dataset.id) return node.dataset.id;
-                                            if (node.dataset.href) return node.dataset.href.split('/').pop();
-                                        }
-                                    } catch(e){}
-                                    return null;
-                                }).catch(() => null);
-                                // If we only inferred an id/href fragment we cannot reliably match against the
-                                // saved processed full-URLs. Skip only if the exact inferred value is present
-                                // as a full URL in the processed set (rare). Otherwise, allow clicking to
-                                // resolve the full URL and then check against the saved links.
-                                if (inferred && processados.has(inferred)) {
-                                    await el.evaluate(node => node.setAttribute('data-processed','1'));
-                                    await el.evaluate(node => { const tr = node.closest('tr'); if (tr) { tr.remove(); return; } const container = node.closest('div.shadow.overflow-hidden'); if (container) container.remove(); });
-                                    continue;
-                                }
-                            }
-                        } catch(e) {}
-                    // 2) if not found, click and rely on interceptors / network
-                    if (!urlFinal) {
-                        const newPagePromise = new Promise(resolve => browser.once('targetcreated', target => resolve(target.page())));
-
-                        // clear lastMatchedUrl before action
-                        lastMatchedUrl = null;
-
-                        // capture current pages then click; we'll close any new pages opened by the click
-                        const pagesBefore = await browser.pages();
-                        const idsBefore = pagesBefore.map(p => p.target()._targetId);
-
-                        // try to infer id before clicking to avoid duplicate processing
-                        const inferredBefore = await el.evaluate(node => {
+                    if (urlFinal) {
+                        if (processados.has(urlFinal)) {
+                            await el.evaluate(node => node.setAttribute('data-processed', '1'));
+                            await el.evaluate(node => {
+                                const tr = node.closest('tr');
+                                if (tr) tr.remove();
+                            });
+                            await new Promise(r => setTimeout(r, 300));
+                            continue;
+                        }
+                    } else {
+                        const inferred = await el.evaluate(node => {
                             try {
                                 const a = node.closest('tr') && node.closest('tr').querySelector('a');
                                 if (a && a.href) return a.href.split('/').pop();
-                                if (node.dataset) { if (node.dataset.id) return node.dataset.id; if (node.dataset.href) return node.dataset.href.split('/').pop(); }
-                            } catch(e){}
+                                if (node.dataset) {
+                                    if (node.dataset.id) return node.dataset.id;
+                                    if (node.dataset.href) return node.dataset.href.split('/').pop();
+                                }
+                            } catch (e) {
+                            }
                             return null;
                         }).catch(() => null);
-                        // Use full URL as the key for in-progress/processed checks. If we only have an
-                        // inferred id we can't reliably decide, so we avoid skipping based solely on id.
-                        if (inferredBefore && inProgress.has(inferredBefore)) {
-                            // already processed or in-progress, skip
-                            await el.evaluate(node => node.setAttribute('data-processed','1')).catch(() => {});
-                            await el.evaluate(node => { const tr = node.closest('tr'); if (tr) tr.remove(); }).catch(() => {});
+                        if (inferred && processados.has(inferred)) {
+                            await el.evaluate(node => node.setAttribute('data-processed', '1'));
+                            await el.evaluate(node => {
+                                const tr = node.closest('tr');
+                                if (tr) {
+                                    tr.remove();
+                                    return;
+                                }
+                                const container = node.closest('div.shadow.overflow-hidden');
+                                if (container) container.remove();
+                            });
+                            await new Promise(r => setTimeout(r, 300));
                             continue;
                         }
+                    }
+                } catch (e) {
+                }
+                if (!urlFinal) {
+                    lastMatchedUrl = null;
 
-                        // mark as processing to avoid other iterations clicking same element
-                        await el.evaluate(node => node.setAttribute('data-processing','1')).catch(() => {});
-                        // prepare to capture any newly opened page quickly and abort its requests to avoid full load (prevents 403 from radar)
-                        let capturedFromNewPage = null;
-                        const targetListener = async (target) => {
-                            try {
-                                const p = await target.page();
-                                if (!p) return;
-                                // enable interception to abort requests rapidly
-                                try { await p.setRequestInterception(true); } catch(e){}
-                                 // ensure we only handle each intercepted request once to avoid "Request is already handled" errors
-                                  const _handledRequests = new WeakSet();
-                                  p.on('request', req => {
-                                      try {
-                                          if (_handledRequests.has(req)) return;
-                                          _handledRequests.add(req);
-                                          // best-effort: abort most requests to avoid full page load; do not call continue after abort
-                                          try {
-                                              req.abort();
-                                          } catch (abortErr) {
-                                              // if abort fails, attempt continue as fallback
-                                              try { req.continue(); } catch(_) {}
-                                          }
-                                      } catch(e) {
-                                          // final fallback: attempt to continue to avoid leaving request unhandled
-                                          try { req.continue(); } catch(_) {}
-                                      }
-                                  });
-
-                                // wait shortly for navigation / domcontent to settle, then grab url
-                                try {
-                                    await Promise.race([
-                                        p.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 3000 }).catch(() => {}),
-                                        new Promise(r => setTimeout(r, 1500))
-                                    ]);
-                                } catch(e){}
-                                try { const u = p.url(); if (u) capturedFromNewPage = u; } catch(e){}
-                                try { await p.close(); } catch(e){}
-                            } catch(e){}
-                        };
-                        browser.once('targetcreated', targetListener);
-                        // perform the click: click the `.radar` element center to ensure we trigger the radar action
-                        const box = await el.boundingBox();
-                        if (box) {
-                            await page.mouse.click(box.x + box.width/2, box.y + box.height/2);
-                        } else {
-                            // last resort: dispatch click on the element
-                            await el.evaluate(node => { try { node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } catch(e){} });
-                        }
-
-                        // wait a bit for network intercepts to capture URLs
-                        await new Promise(r => setTimeout(r, CLICK_DELAY));
-                        // remove listener if it wasn't triggered
-                        try { browser.removeListener('targetcreated', targetListener); } catch(e){}
-                        if (capturedFromNewPage) lastMatchedUrl = lastMatchedUrl || capturedFromNewPage;
-
-                        // try to read any intercepted values exposed in page (window.__lastOpenedUrl)
+                    const inferredBefore = await el.evaluate(node => {
                         try {
-                            const winLast = await page.evaluate(() => { try { return window.__lastOpenedUrl || null; } catch(e) { return null; } });
-                            if (winLast) lastMatchedUrl = lastMatchedUrl || winLast;
-                        } catch(e) {}
-
-                        // if network/interceptors captured a URL, use it
-                        if (lastMatchedUrl) {
-                            urlFinal = lastMatchedUrl;
-                        }
-                    }
-
-                    if (!urlFinal) {
-                        try {
-                            // collect diagnostic info to help debug why extraction failed
-                            const diag = { outer: null, rowHtml: null, bbox: null, lastMatchedUrl: lastMatchedUrl };
-                            try {
-                                diag.outer = await el.evaluate(node => node.outerHTML).catch(() => null);
-                                diag.rowHtml = await el.evaluate(node => { const tr = node.closest('tr'); return tr ? tr.innerHTML : null; }).catch(() => null);
-                                const b = await el.boundingBox(); if (b) diag.bbox = { x: b.x, y: b.y, width: b.width, height: b.height };
-                            } catch(e){}
-                            // try to read injected window.__lastOpenedUrl if available
-                            try {
-                                const lastOpen = await page.evaluate(() => { try { return window.__lastOpenedUrl || null; } catch(e) { return null; } });
-                                if (lastOpen) diag.windowLastOpened = lastOpen;
-                            } catch(e){}
-
-                            const ts = Date.now();
-                            console.warn(`[Scout] Não foi possível obter URL do radar para o jogo na posição ${i}. Diagnostic:`, diag);
-                            // save a small screenshot to help visual debugging (if possible)
-                            try {
-                                const screenshotsDir = path.join(__dirname, 'log', 'telemetria');
-                                if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, { recursive: true });
-                                const file = path.join(screenshotsDir, `inspect_radar_pos_${i}_${ts}.png`);
-                                // ensure privacy/cookie banner closed before screenshot
-                                try { await closePrivacyModal(page); } catch(_){}
-                                // if we have bbox, clip to element area, otherwise full page
-                                if (diag.bbox) {
-                                    await page.screenshot({ path: file, clip: { x: Math.max(0, diag.bbox.x), y: Math.max(0, diag.bbox.y), width: Math.min(diag.bbox.width, 2000), height: Math.min(diag.bbox.height, 2000) } }).catch(() => {});
-                                } else {
-                                    await page.screenshot({ path: file, fullPage: false }).catch(() => {});
-                                }
-                                console.log('[Scout] Screenshot salva em', file);
-                            } catch(e) { console.warn('[Scout] Falha ao salvar screenshot de diagnóstico:', e && e.message ? e.message : e); }
-                        } catch (e) {
-                            console.warn('[Scout] Erro ao coletar diagnósticos:', e && e.message ? e.message : e);
-                        }
-                        continue;
-                    }
-
-                    // Normalize URL: if relative path (starts with '/'), prefix site origin
-                    try {
-                        if (/^\//.test(urlFinal)) {
-                            urlFinal = new URL(urlFinal, 'https://www.radarfutebol.com').toString();
-                        }
-                        // strip surrounding quotes if any
-                        urlFinal = urlFinal.replace(/^"|"$/g, '').trim();
-                        // remove querystring or fragment and trailing slash to obtain stable id
-                        urlFinal = urlFinal.replace(/[?#].*$/, '').replace(/\/$/, '');
-                    } catch (e) {
-                        console.warn('[Scout] Erro ao normalizar URL:', urlFinal, e.message || e);
-                    }
-
-                    // debounce: if we detected the same normalized URL very recently, skip noisy logs
-                    const now = Date.now();
-                    const normUrlKey = urlFinal;
-                    const lastTs = recentDetections.get(normUrlKey) || 0;
-                    if (now - lastTs < 10_000) {
-                        // update timestamp to extend suppression window and skip noisy processing
-                        recentDetections.set(normUrlKey, now);
-                        console.log('[Scout] Debounced repeated detection for', urlFinal);
-                        continue;
-                    }
-                    recentDetections.set(normUrlKey, now);
-                    // cleanup old entries periodically
-                    if (recentDetections.size > 500) {
-                        const cutoff = now - 60_000;
-                        for (const [k, v] of recentDetections.entries()) if (v < cutoff) recentDetections.delete(k);
-                    }
-
-                    console.log('[Scout] URL final detectada:', urlFinal);
-
-                    const jogoId = urlFinal.split('/').pop();
-                    // If the processed list may contain either ids or full URLs,
-                    // consider both forms when deciding to skip/remove the button.
-                    if (processados.has(jogoId) || processados.has(urlFinal) || inProgress.has(jogoId) || inProgress.has(urlFinal)) {
-                        // mark as processed in DOM and remove to avoid re-clicks
-                        try {
-                            await el.evaluate(node => node.setAttribute('data-processed','1'));
-                            await el.evaluate(node => { const tr = node.closest('tr'); if (tr) { tr.remove(); return; } const container = node.closest('div.shadow.overflow-hidden'); if (container) container.remove(); }).catch(() => {});
-                        } catch(e) {}
-                        // skip further processing for this item
-                        console.log('[Scout] Skipping already-processed/in-progress jogoId=', jogoId);
-                    } else if (!processados.has(jogoId)) {
-                        try {
-                            // mark as in-progress using the full URL to avoid collisions by id
-                            inProgress.add(urlFinal);
-                            const sendResult = await sendToServer(urlFinal);
-                            if (sendResult && sendResult.ok) {
-                                console.log(`✅ [SUCESSO] Jogo ${jogoId} enviado.`);
-                                // persist only the normalized full URL as the canonical processed key
-                                try { processados.add(urlFinal); } catch(_){ }
-                                // persist immediately
-                                try { saveProcessedSet(processados); } catch(e) { console.warn('Erro salvando processados:', e.message||e); }
-                                // mark in DOM as processed and remove
-                                await el.evaluate(node => node.setAttribute('data-processed','1'));
-                                await el.evaluate(node => {
-                                    const tr = node.closest('tr'); if (tr) { tr.remove(); return; }
-                                    const container = node.closest('div.shadow.overflow-hidden'); if (container) container.remove();
-                                }).catch(() => {});
-                                // fallback cleanup: remove any rows/anchors that reference this jogoId
-                                try {
-                                    await page.evaluate((id) => {
-                                        try {
-                                            const anchors = Array.from(document.querySelectorAll('a')).filter(a => a.href && a.href.includes(id));
-                                            for (const a of anchors) { const tr = a.closest('tr'); if (tr) tr.remove(); }
-                                            const radares = Array.from(document.querySelectorAll('.radar[data-processing]'));
-                                            for (const r of radares) { const tr = r.closest('tr'); if (tr) tr.remove(); }
-                                        } catch(e){}
-                                    }, jogoId);
-                                } catch(e) {}
-                                inProgress.delete(urlFinal);
-                            } else {
-                                // If server indicates game already started/exists, mark as processed to avoid retries
-                                let handled = false;
-                                try {
-                                    if (sendResult && sendResult.status) {
-                                        const st = sendResult.status;
-                                        const body = sendResult.body;
-                                        if (st === 409 && typeof body === 'string') {
-                                            const js = JSON.parse(body);
-                                            if (js && js.erro && /Jogo já iniciado/i.test(js.erro)) {
-                                                console.log(`[Scout] Servidor diz que o jogo já iniciou para ${jogoId}, marcando como processado.`);
-                                                // mark the normalized full URL as processed to avoid retries
-                                                try { processados.add(urlFinal); } catch(_){ }
-                                                try { saveProcessedSet(processados); } catch(e){}
-                                                await el.evaluate(node => node.setAttribute('data-processed','1'));
-                                                await el.evaluate(node => { const tr = node.closest('tr'); if (tr) { tr.remove(); return; } const container = node.closest('div.shadow.overflow-hidden'); if (container) container.remove(); });
-                                                handled = true;
-                                            }
-                                        }
-                                    }
-                                } catch(e) {}
-                                if (!handled) console.warn('[Scout] Falha ao enviar para o servidor', sendResult);
+                            const a = node.closest('tr') && node.closest('tr').querySelector('a');
+                            if (a && a.href) return a.href.split('/').pop();
+                            if (node.dataset) {
+                                if (node.dataset.id) return node.dataset.id;
+                                if (node.dataset.href) return node.dataset.href.split('/').pop();
                             }
                         } catch (e) {
-                            console.warn('[Scout] Erro ao enviar jogo:', e.message || e);
-                            try { inProgress.delete(jogoId); } catch(_){}
                         }
+                        return null;
+                    }).catch(() => null);
+                    if (inferredBefore && inProgress.has(inferredBefore)) {
+                        await el.evaluate(node => node.setAttribute('data-processed', '1')).catch(() => {
+                        });
+                        await el.evaluate(node => {
+                            const tr = node.closest('tr');
+                            if (tr) tr.remove();
+                        }).catch(() => {
+                        });
+                        await new Promise(r => setTimeout(r, 300));
+                        continue;
                     }
 
-                    // small delay between items (avoid too-frequent clicks)
-                    await new Promise(r => setTimeout(r, CLICK_DELAY));
-                    processedThisCycle++;
-                    i++;
-                } catch (e) {
-                    console.error('Erro interno no loop de radares:', e.message || e);
-                    break;
-                }
-            }
+                    await el.evaluate(node => node.setAttribute('data-processing', '1')).catch(() => {
+                    });
+                    let capturedFromNewPage = null;
+                    const targetListener = async (target) => {
+                        try {
+                            const p = await target.page();
+                            if (!p) return;
+                            // Enable request interception for this transient page but guard against
+                            // double-resolution races. We must abort requests here (to avoid 403s)
+                            // so the opened page doesn't perform restricted network calls.
+                            try {
+                                await p.setRequestInterception(true);
+                            } catch (e) {
+                                // ignore: some targets may not allow interception
+                            }
+                            const _handledRequests = new WeakSet();
+                            p.on('request', req => {
+                                try {
+                                    // If Puppeteer exposes isInterceptResolutionHandled(), use it.
+                                    if (typeof req.isInterceptResolutionHandled === 'function') {
+                                        try {
+                                            if (req.isInterceptResolutionHandled()) return;
+                                        } catch (e) {
+                                            // fallthrough
+                                        }
+                                    }
+                                    if (_handledRequests.has(req)) return;
+                                    _handledRequests.add(req);
+                                    try {
+                                        req.abort();
+                                    } catch (err) {
+                                        // abort can throw if already handled; ignore to avoid crash
+                                    }
+                                } catch (e) {
+                                    // swallow unexpected errors
+                                }
+                            });
 
-            // Finalize: persist processed set, close browser and exit the miner so the process stops
-            try { saveProcessedSet(processados); } catch(e) { console.warn('[Scout] Erro salvando processados antes de sair:', e && e.message ? e.message : e); }
-            try { console.log('Finalizando Robo.');await browser.close(); } catch(e) { /* ignore close errors */ }
-            return; // exit rodarMinerador so script terminates instead of looping
+                            try {
+                                await Promise.race([
+                                    p.waitForNavigation({waitUntil: 'domcontentloaded', timeout: 3000}).catch(() => {
+                                    }),
+                                    new Promise(r => setTimeout(r, 1500))
+                                ]);
+                            } catch (e) {
+                            }
+                            try {
+                                const u = p.url();
+                                if (u) capturedFromNewPage = u;
+                            } catch (e) {
+                            }
+                            try {
+                                await p.close();
+                            } catch (e) {
+                            }
+                        } catch (e) {
+                        }
+                    };
+                    browser.once('targetcreated', targetListener);
+                    const box = await el.boundingBox();
+                    if (box) {
+                        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+                    } else {
+                        await el.evaluate(node => {
+                            try {
+                                node.dispatchEvent(new MouseEvent('click', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window
+                                }));
+                            } catch (e) {
+                            }
+                        });
+                    }
+
+                    await new Promise(r => setTimeout(r, CLICK_DELAY));
+                    try {
+                        browser.removeListener('targetcreated', targetListener);
+                    } catch (e) {
+                    }
+                    if (capturedFromNewPage) lastMatchedUrl = lastMatchedUrl || capturedFromNewPage;
+
+                    try {
+                        const winLast = await page.evaluate(() => {
+                            try {
+                                return window.__lastOpenedUrl || null;
+                            } catch (e) {
+                                return null;
+                            }
+                        });
+                        if (winLast) lastMatchedUrl = lastMatchedUrl || winLast;
+                    } catch (e) {
+                    }
+
+                    if (lastMatchedUrl) {
+                        urlFinal = lastMatchedUrl;
+                    }
+                }
+
+                if (!urlFinal) {
+                    try {
+                        const diag = {outer: null, rowHtml: null, bbox: null, lastMatchedUrl: lastMatchedUrl};
+                        try {
+                            diag.outer = await el.evaluate(node => node.outerHTML).catch(() => null);
+                            diag.rowHtml = await el.evaluate(node => {
+                                const tr = node.closest('tr');
+                                return tr ? tr.innerHTML : null;
+                            }).catch(() => null);
+                            const b = await el.boundingBox();
+                            if (b) diag.bbox = {x: b.x, y: b.y, width: b.width, height: b.height};
+                        } catch (e) {
+                        }
+                        try {
+                            const lastOpen = await page.evaluate(() => {
+                                try {
+                                    return window.__lastOpenedUrl || null;
+                                } catch (e) {
+                                    return null;
+                                }
+                            });
+                            if (lastOpen) diag.windowLastOpened = lastOpen;
+                        } catch (e) {
+                        }
+
+                        const ts = Date.now();
+                        console.warn(`[Scout] Não foi possível obter URL do radar para o jogo na posição ${i}. Diagnostic:`, diag);
+                        try {
+                            const screenshotsDir = path.join(__dirname, 'log', 'telemetria');
+                            if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir, {recursive: true});
+                            const file = path.join(screenshotsDir, `inspect_radar_pos_${i}_${ts}.png`);
+                            try {
+                                await closePrivacyModal(page);
+                            } catch (_) {
+                            }
+                            if (diag.bbox) {
+                                await page.screenshot({
+                                    path: file,
+                                    clip: {
+                                        x: Math.max(0, diag.bbox.x),
+                                        y: Math.max(0, diag.bbox.y),
+                                        width: Math.min(diag.bbox.width, 2000),
+                                        height: Math.min(diag.bbox.height, 2000)
+                                    }
+                                }).catch(() => {
+                                });
+                            } else {
+                                await page.screenshot({path: file, fullPage: false}).catch(() => {
+                                });
+                            }
+                            console.log('[Scout] Screenshot salva em', file);
+                        } catch (e) {
+                            console.warn('[Scout] Falha ao salvar screenshot de diagnóstico:', e && e.message ? e.message : e);
+                        }
+                    } catch (e) {
+                        console.warn('[Scout] Erro ao coletar diagnósticos:', e && e.message ? e.message : e);
+                    }
+                    continue;
+                }
+
+                try {
+                    if (/^\//.test(urlFinal)) {
+                        urlFinal = new URL(urlFinal, 'https://www.radarfutebol.com').toString();
+                    }
+                    urlFinal = urlFinal.replace(/^"|"$/g, '').trim();
+                    urlFinal = urlFinal.replace(/[?#].*$/, '').replace(/\/$/, '');
+                } catch (e) {
+                    console.warn('[Scout] Erro ao normalizar URL:', urlFinal, e.message || e);
+                }
+
+                const now = Date.now();
+                const normUrlKey = urlFinal;
+                const lastTs = recentDetections.get(normUrlKey) || 0;
+                const DEBOUNCE_WINDOW = 30_000;
+                if (now - lastTs < DEBOUNCE_WINDOW) {
+                    recentDetections.set(normUrlKey, now);
+                    continue;
+                }
+                recentDetections.set(normUrlKey, now);
+                if (recentDetections.size > 2000) {
+                    const cutoff = now - (5 * 60_000);
+                    for (const [k, v] of recentDetections.entries()) if (v < cutoff) recentDetections.delete(k);
+                }
+
+                console.log('[Scout] URL final detectada:', urlFinal);
+
+                const jogoId = urlFinal.split('/').pop();
+                        if (processados.has(jogoId) || processados.has(urlFinal) || inProgress.has(jogoId) || inProgress.has(urlFinal)) {
+                    try {
+                        await el.evaluate(node => node.setAttribute('data-processed', '1'));
+                        await el.evaluate(node => {
+                            const tr = node.closest('tr');
+                            if (tr) {
+                                tr.remove();
+                                return;
+                            }
+                            const container = node.closest('div.shadow.overflow-hidden');
+                            if (container) container.remove();
+                        }).catch(() => {
+                        });
+                        try {
+                            processados.add(urlFinal);
+                            if (jogoId) processados.add(jogoId);
+                        } catch (_) {
+                        }
+                        try {
+                            saveProcessedSet(processados);
+                        } catch (_) {
+                        }
+                        try {
+                            inProgress.delete(jogoId);
+                        } catch (_) {
+                        }
+                        try {
+                            inProgress.delete(urlFinal);
+                        } catch (_) {
+                        }
+                    } catch (e) {
+                    }
+                    try {
+                        console.log('[Scout] Skipping jogoId=', jogoId, ' processedHasId=', processados.has(jogoId), ' processedHasUrl=', processados.has(urlFinal), ' inProgress size=', inProgress.size);
+                    } catch (_) {
+                        console.log('[Scout] Skipping jogoId=', jogoId);
+                    }
+                    await new Promise(r => setTimeout(r, 300));
+                    continue;
+                } else if (!processados.has(jogoId)) {
+                    try {
+                        inProgress.add(jogoId);
+                        inProgress.add(urlFinal);
+                        const sendResult = await sendToServer(urlFinal);
+                        if (sendResult && sendResult.ok) {
+                            console.log(`✅ [SUCESSO] Jogo ${jogoId} enviado.`);
+                            consecutiveSkips = 0;
+                                try {
+                                    processados.add(urlFinal);
+                                    if (jogoId) processados.add(jogoId);
+                                } catch (_) {
+                                }
+                                try {
+                                    processados.add(urlFinal);
+                                    if (jogoId) processados.add(jogoId);
+                                } catch (_) {
+                                }
+                            try {
+                                saveProcessedSet(processados);
+                            } catch (e) {
+                                console.warn('Erro salvando processados:', e.message || e);
+                            }
+                            await el.evaluate(node => node.setAttribute('data-processed', '1'));
+                            await el.evaluate(node => {
+                                const tr = node.closest('tr');
+                                if (tr) {
+                                    tr.remove();
+                                    return;
+                                }
+                                const container = node.closest('div.shadow.overflow-hidden');
+                                if (container) container.remove();
+                            }).catch(() => {
+                            });
+                            try {
+                                await page.evaluate((id) => {
+                                    try {
+                                        const anchors = Array.from(document.querySelectorAll('a')).filter(a => a.href && a.href.includes(id));
+                                        for (const a of anchors) {
+                                            const tr = a.closest('tr');
+                                            if (tr) tr.remove();
+                                        }
+                                        const radares = Array.from(document.querySelectorAll('.radar[data-processing]'));
+                                        for (const r of radares) {
+                                            const tr = r.closest('tr');
+                                            if (tr) tr.remove();
+                                        }
+                                    } catch (e) {
+                                    }
+                                }, jogoId);
+                            } catch (e) {
+                            }
+                            try {
+                                inProgress.delete(urlFinal);
+                            } catch (_) {
+                            }
+                            try {
+                                inProgress.delete(jogoId);
+                            } catch (_) {
+                            }
+                        } else {
+                            let handled = false;
+                            try {
+                                if (sendResult && sendResult.status) {
+                                    const st = sendResult.status;
+                                    const body = sendResult.body;
+                                    if (st === 409 && typeof body === 'string') {
+                                        const js = JSON.parse(body);
+                                        if (js && js.erro && /Jogo já iniciado/i.test(js.erro)) {
+                                            console.log(`[Scout] Servidor diz que o jogo já iniciou para ${jogoId}, marcando como processado.`);
+                                            try {
+                                                processados.add(urlFinal);
+                                                if (jogoId) processados.add(jogoId);
+                                            } catch (_) {
+                                            }
+                                            try {
+                                                saveProcessedSet(processados);
+                                            } catch (e) {
+                                            }
+                                            await el.evaluate(node => node.setAttribute('data-processed', '1'));
+                                            await el.evaluate(node => {
+                                                const tr = node.closest('tr');
+                                                if (tr) {
+                                                    tr.remove();
+                                                    return;
+                                                }
+                                                const container = node.closest('div.shadow.overflow-hidden');
+                                                if (container) container.remove();
+                                            });
+                                            handled = true;
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                            }
+                            if (!handled) console.warn('[Scout] Falha ao enviar para o servidor', sendResult);
+                        }
+                    } catch (e) {
+                        console.warn('[Scout] Erro ao enviar jogo:', e.message || e);
+                        try {
+                            inProgress.delete(jogoId);
+                        } catch (_) {
+                        }
+                        try {
+                            inProgress.delete(urlFinal);
+                        } catch (_) {
+                        }
+                    }
+                }
+
+                await new Promise(r => setTimeout(r, CLICK_DELAY));
+                processedThisCycle++;
+                i++;
+            } catch (e) {
+                console.error('Erro interno no loop de radares:', e.message || e);
+                break;
+            }
+        }
+
+        try {
+            saveProcessedSet(processados);
         } catch (e) {
-            console.error('Erro crítico:', e.message || e);
-            try { await page.reload(); } catch(e){}
+            console.warn('[Scout] Erro salvando processados antes de sair:', e && e.message ? e.message : e);
+        }
+        try {
+            console.log('Finalizando Robo.');
+            await browser.close();
+        } catch (e) {
+        }
+        globalBrowser = null;
+        return;
+    } catch (e) {
+        console.error('Erro crítico:', e.message || e);
+        try {
+            await page.reload();
+        } catch (e) {
         }
     }
 }
 
-// ensure processed saved on exit
-process.on('SIGINT', () => {
-    try { saveProcessedSet(processadosGlobal); } catch(e){}
+async function _gracefulShutdown(signal) {
+    try {
+        saveProcessedSet(processadosGlobal);
+    } catch (e) {
+    }
+    if (globalBrowser) {
+        try {
+            console.log(`[Scout] ${signal} received, closing browser...`);
+            await globalBrowser.close();
+        } catch (e) {
+            console.warn('[Scout] Erro fechando browser na finalização:', e && e.message ? e.message : e);
+        }
+        globalBrowser = null;
+    }
     process.exit(0);
-});
-process.on('SIGTERM', () => {
-    try { saveProcessedSet(processadosGlobal); } catch(e){}
-    process.exit(0);
+}
+
+process.on('SIGINT', () => _gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => _gracefulShutdown('SIGTERM'));
+process.on('exit', () => {
+    if (globalBrowser) {
+        try {
+            globalBrowser.close().catch(() => {
+            });
+        } catch (_) {
+        }
+        globalBrowser = null;
+    }
 });
 
-// Keep a global ref for exit handler
 let processadosGlobal = null;
 
 (async () => {
     processadosGlobal = loadProcessed();
-    // start main miner but reuse the loaded set
     await rodarMinerador();
 })();
 
-// sendToServer now respects API_BASE environment variable so we can point to a public API in production
 async function sendToServer(urlToSend) {
-    // Retry loop for transient 503 "Engine ainda não pronta" from local server
     const maxAttempts = 5;
-    const baseDelay = 1500; // ms
+    const baseDelay = 1500;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-            const data = JSON.stringify({ url: urlToSend });
+            const data = JSON.stringify({url: urlToSend});
             const apiBase = process.env.API_BASE || process.env.API_URL || 'http://127.0.0.1:3000';
             const apiUrl = new URL('/add-game', apiBase);
             const options = {
@@ -589,35 +988,36 @@ async function sendToServer(urlToSend) {
                     let body = '';
                     res.on('data', (chunk) => body += chunk);
                     res.on('end', () => {
-                        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body });
+                        resolve({ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body});
                     });
                 });
-                req.on('error', (err) => resolve({ ok: false, error: err.message }));
-                req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+                req.on('error', (err) => resolve({ok: false, error: err.message}));
+                req.on('timeout', () => {
+                    req.destroy();
+                    resolve({ok: false, error: 'timeout'});
+                });
                 req.write(data);
                 req.end();
             });
 
-            // If server says engine not ready (503), retry with backoff
             if (result && result.status === 503 && typeof result.body === 'string' && result.body.includes('Engine ainda não pronta')) {
                 if (attempt < maxAttempts) {
                     const wait = baseDelay * attempt;
                     console.log(`[Scout] Servidor ainda inicializando (attempt ${attempt}/${maxAttempts}), aguardando ${wait}ms antes de tentar novamente`);
                     await new Promise(r => setTimeout(r, wait));
-                    continue; // retry
+                    continue;
                 }
             }
             return result;
         } catch (e) {
-            // transient error: retry unless last attempt
             if (attempt < maxAttempts) {
                 const wait = baseDelay * attempt;
                 console.log(`[Scout] Erro ao conectar ao servidor (attempt ${attempt}/${maxAttempts}): ${e.message || e} — aguardando ${wait}ms`);
                 await new Promise(r => setTimeout(r, wait));
                 continue;
             }
-            return { ok: false, error: e.message || String(e) };
+            return {ok: false, error: e.message || String(e)};
         }
     }
-    return { ok: false, error: 'max_attempts_exceeded' };
- }
+    return {ok: false, error: 'max_attempts_exceeded'};
+}
