@@ -992,7 +992,7 @@ async function sendToServer(urlToSend) {
                     'Content-Type': 'application/json',
                     'Content-Length': Buffer.byteLength(data)
                 },
-                timeout: 10000
+                timeout: 30000
             };
             const result = await new Promise((resolve) => {
                 const req = http.request(options, (res) => {
@@ -1010,6 +1010,28 @@ async function sendToServer(urlToSend) {
                 req.write(data);
                 req.end();
             });
+
+            // If we timed out but the server might have processed the request, do one
+            // extra confirmation attempt with a longer timeout before giving up.
+            if (result && result.ok === false && result.error === 'timeout') {
+                try {
+                    console.log('[Scout] Timeout no envio — efetuando tentativa de confirmação extra...');
+                    const confirmOptions = Object.assign({}, options, {timeout: 30000});
+                    const confirm = await new Promise((resolve) => {
+                        const creq = http.request(confirmOptions, (res) => {
+                            let body = '';
+                            res.on('data', c => body += c);
+                            res.on('end', () => resolve({ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, body}));
+                        });
+                        creq.on('error', (err) => resolve({ok: false, error: err.message}));
+                        creq.on('timeout', () => { creq.destroy(); resolve({ok: false, error: 'timeout'}); });
+                        try { creq.write(data); creq.end(); } catch (e) { resolve({ok: false, error: String(e)}); }
+                    });
+                    if (confirm && confirm.ok) return confirm;
+                } catch (e) {
+                    // swallow and fallthrough to return original timeout
+                }
+            }
 
                 if (result && result.status === 503 && typeof result.body === 'string' && result.body.includes('Engine ainda não pronta')) {
                 if (attempt < maxAttempts) {
