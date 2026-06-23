@@ -203,17 +203,21 @@ async function iniciarRobo() {
                     continue;
                 }
 
+                let screenshot = null;
                 try {
-                    await jogo.pageContext.waitForTimeout(2000);
-                } catch (_) {
+                    screenshot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+                } catch (e) {
+                    screenshot = null;
                 }
 
-                const screenshot = await jogo.pageContext.screenshot({
-                    encoding: 'base64',
-                    type: 'jpeg',
-                    quality: 80,
-                    clip: {x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height}
-                });
+                if (!screenshot) {
+                    screenshot = await jogo.pageContext.screenshot({
+                        encoding: 'base64',
+                        type: 'jpeg',
+                        quality: 80,
+                        clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
+                    }).catch(() => null);
+                }
 
                 if (screenshot) {
                     const tamanhoKB = screenshot.length / 1024;
@@ -876,4 +880,6 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
+
+
 
