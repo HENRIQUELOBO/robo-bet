@@ -788,7 +788,18 @@ async function rodarMinerador() {
                     await new Promise(r => setTimeout(r, 300));
                     continue;
                 } else if (!processados.has(jogoId)) {
-                    try {
+                        try {
+                        // basic URL validation: prefer /radar/ links or a trailing numeric id
+                        const isRadarLike = /\/radar\//i.test(urlFinal) || /\/(\d+)$/.test(urlFinal);
+                        if (!isRadarLike) {
+                            console.log('[Scout] URL não parece ser radar/jogo, pulando envio mas marcando como processado:', urlFinal);
+                            // mark both forms to avoid re-detection
+                            try { processados.add(urlFinal); if (jogoId) processados.add(jogoId); saveProcessedSet(processados); } catch (_) {}
+                            try { await el.evaluate(node => node.setAttribute('data-processed', '1')); } catch (_) {}
+                            try { await el.evaluate(node => { const tr = node.closest('tr'); if (tr) tr.remove(); }); } catch(_) {}
+                            continue;
+                        }
+
                         inProgress.add(jogoId);
                         inProgress.add(urlFinal);
                         const sendResult = await sendToServer(urlFinal);
@@ -965,7 +976,7 @@ let processadosGlobal = null;
 })();
 
 async function sendToServer(urlToSend) {
-    const maxAttempts = 5;
+    const maxAttempts = 6;
     const baseDelay = 1500;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
@@ -981,7 +992,7 @@ async function sendToServer(urlToSend) {
                     'Content-Type': 'application/json',
                     'Content-Length': Buffer.byteLength(data)
                 },
-                timeout: 5000
+                timeout: 10000
             };
             const result = await new Promise((resolve) => {
                 const req = http.request(options, (res) => {
@@ -1000,7 +1011,7 @@ async function sendToServer(urlToSend) {
                 req.end();
             });
 
-            if (result && result.status === 503 && typeof result.body === 'string' && result.body.includes('Engine ainda não pronta')) {
+                if (result && result.status === 503 && typeof result.body === 'string' && result.body.includes('Engine ainda não pronta')) {
                 if (attempt < maxAttempts) {
                     const wait = baseDelay * attempt;
                     console.log(`[Scout] Servidor ainda inicializando (attempt ${attempt}/${maxAttempts}), aguardando ${wait}ms antes de tentar novamente`);
@@ -1008,6 +1019,7 @@ async function sendToServer(urlToSend) {
                     continue;
                 }
             }
+            // successful or final result (even errors) return to caller for handling
             return result;
         } catch (e) {
             if (attempt < maxAttempts) {
