@@ -7,7 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const PROCESSED_FILE = path.join(__dirname, 'processed.json');
-const HEADLESS = false;
+const HEADLESS = true;
 const CLICK_DELAY = 1500;
 let globalBrowser = null;
 
