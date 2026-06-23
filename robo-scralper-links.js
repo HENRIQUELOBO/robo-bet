@@ -789,8 +789,8 @@ async function rodarMinerador() {
                     continue;
                 } else if (!processados.has(jogoId)) {
                         try {
-                        // basic URL validation: prefer /radar/ links or a trailing numeric id
-                        const isRadarLike = /\/radar\//i.test(urlFinal) || /\/(\d+)$/.test(urlFinal);
+                        // only accept explicit /radar/ links to avoid external non-game URLs
+                        const isRadarLike = /\/radar\//i.test(urlFinal);
                         if (!isRadarLike) {
                             console.log('[Scout] URL não parece ser radar/jogo, pulando envio mas marcando como processado:', urlFinal);
                             // mark both forms to avoid re-detection
