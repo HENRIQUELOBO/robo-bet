@@ -204,7 +204,7 @@ async function iniciarRobo() {
                 }
 
                 const tryWindowSeconds = 12; // increase window to 12s
-                const tryIntervalMs = 800; // 800ms between attempts (slightly slower)
+                const tryIntervalMs = 2000; // 800ms between attempts (slightly slower)
                 const minKb = 30; // require at least 30KB
 
                 const candidates = [];
