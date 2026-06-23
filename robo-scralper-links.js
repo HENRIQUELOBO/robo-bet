@@ -533,8 +533,10 @@ async function rodarMinerador() {
                 }
             }
 
-            console.log(`[Scout] Ciclo finalizado. Pausa de ${CYCLE_DELAY/1000}s.`);
-            await new Promise(r => setTimeout(r, CYCLE_DELAY));
+            // Finalize: persist processed set, close browser and exit the miner so the process stops
+            try { saveProcessedSet(processados); } catch(e) { console.warn('[Scout] Erro salvando processados antes de sair:', e && e.message ? e.message : e); }
+            try { console.log('Finalizando Robo.');await browser.close(); } catch(e) { /* ignore close errors */ }
+            return; // exit rodarMinerador so script terminates instead of looping
         } catch (e) {
             console.error('Erro crítico:', e.message || e);
             try { await page.reload(); } catch(e){}
