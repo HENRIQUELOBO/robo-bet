@@ -204,7 +204,7 @@ async function iniciarRobo() {
                 }
 
                 try {
-                    await jogo.pageContext.waitForTimeout(800);
+                    await jogo.pageContext.waitForTimeout(2000);
                 } catch (_) {
                 }
 
