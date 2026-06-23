@@ -203,96 +203,38 @@ async function iniciarRobo() {
                     continue;
                 }
 
-                const tryWindowSeconds = 12; // increase window to 12s
-                const tryIntervalMs = 2000; // 800ms between attempts (slightly slower)
-                const minKb = 30; // require at least 30KB
+                const tryDelayMs = 2000; // tempo de espera antes da captura — ajuste no servidor se necessário
+                await new Promise(r => setTimeout(r, tryDelayMs));
 
-                const candidates = [];
-
-                const takeOne = async () => {
-                    let shot = null;
+                const takeSingle = async () => {
                     try {
-                        shot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
-                    } catch (e) {
-                        shot = null;
-                    }
-                    if (!shot) {
-                        shot = await jogo.pageContext.screenshot({
-                            encoding: 'base64',
-                            type: 'jpeg',
-                            quality: 80,
-                            clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
-                        }).catch(() => null);
-                    }
-                    return shot;
+                        let shot = null;
+                        try {
+                            shot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+                        } catch (_) { shot = null; }
+                        if (!shot) {
+                            shot = await jogo.pageContext.screenshot({
+                                encoding: 'base64',
+                                type: 'jpeg',
+                                quality: 80,
+                                clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
+                            }).catch(() => null);
+                        }
+                        return shot;
+                    } catch (e) { return null; }
                 };
 
-                // If first is missing or too small, perform repeated 1s captures for a short window
-                try {
-                    const firstSizeKB = (candidates[0] || '').length / 1024 || 0;
-                    if (!candidates[0] || firstSizeKB < minKb) {
-                        const attempts = Math.max(1, Math.floor(tryWindowSeconds * 1000 / tryIntervalMs));
-                        for (let i = 0; i < attempts; i++) {
-                            await new Promise(r => setTimeout(r, tryIntervalMs));
-                            try {
-                                const s = await takeOne();
-                                if (s) candidates.push(s);
-                            } catch (_) { }
-                        }
-                    }
-                } catch (_) { }
-
-                if (candidates.length === 0) {
+                const shot = await takeSingle();
+                if (!shot) {
                     process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: não foi possível capturar screenshot (nenhuma imagem)\n`);
                     continue;
                 }
 
-                const extraRetriesIfSmall = 10;
-
-                let best = null; bestSize = 0;
-                for (let c of candidates) {
-                    try {
-                        const kb = (c || '').length / 1024;
-                        if (kb > bestSize) {
-                            bestSize = kb;
-                            best = c;
-                        }
-                    } catch (e) { }
-                }
-
-                if (!best || bestSize < minKb) {
-                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: melhor candidata pequena (${bestSize.toFixed(1)}KB) — tentando ${extraRetriesIfSmall} tentativas extras\n`);
-                    for (let r = 0; r < extraRetriesIfSmall; r++) {
-                        await new Promise(res => setTimeout(res, tryIntervalMs));
-                        try {
-                            const s = await takeOne();
-                            if (s) candidates.push(s);
-                        } catch (_) {}
-                    }
-
-                    // re-evaluate best after extras
-                    best = null; bestSize = 0;
-                    for (let c of candidates) {
-                        try {
-                            const kb = (c || '').length / 1024;
-                            if (kb > bestSize) {
-                                bestSize = kb;
-                                best = c;
-                            }
-                        } catch (e) { }
-                    }
-
-                    if (!best || bestSize < minKb) {
-                        process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: após tentativas extras melhores candidatas ainda pequenas (${bestSize.toFixed(1)}KB) — ignorada\n`);
-                        continue;
-                    }
-                }
-
                 try {
-                    const dataUrl = `data:image/jpeg;base64,${best}`;
+                    const dataUrl = `data:image/jpeg;base64,${shot}`;
                     jogo.sofascoreMomentumImg = dataUrl;
                     logger.registrarScreenshotMomentum(idJogo, dataUrl);
-                    process.stdout.write(`[MOMENTUM] ✅ ${jogo.nomePartida}: ${bestSize.toFixed(1)}KB (melhor de ${candidates.length} tentativas)\n`);
+                    process.stdout.write(`[MOMENTUM] ✅ ${jogo.nomePartida}: captura única realizada\n`);
                 } catch (e) {
                     process.stderr.write(`[MOMENTUM] ❌ ${jogo.nomePartida}: falha ao salvar screenshot -> ${e && e.message ? e.message : e}\n`);
                 }
@@ -946,6 +888,4 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
-
-
 
