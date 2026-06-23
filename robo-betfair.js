@@ -203,34 +203,109 @@ async function iniciarRobo() {
                     continue;
                 }
 
-                let screenshot = null;
+                const tryWindowSeconds = 8;
+                const tryIntervalMs = 1000;
+                const minKb = 20;
+
+                const candidates = [];
+
+                const takeOne = async () => {
+                    let shot = null;
+                    try {
+                        shot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
+                    } catch (e) {
+                        shot = null;
+                    }
+                    if (!shot) {
+                        shot = await jogo.pageContext.screenshot({
+                            encoding: 'base64',
+                            type: 'jpeg',
+                            quality: 80,
+                            clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
+                        }).catch(() => null);
+                    }
+                    return shot;
+                };
+
+                // First try: single attempt (fast path)
                 try {
-                    screenshot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
-                } catch (e) {
-                    screenshot = null;
+                    const first = await takeOne();
+                    if (first) candidates.push(first);
+                } catch (_) { }
+
+                // If first is missing or too small, perform repeated 1s captures for a short window
+                try {
+                    const firstSizeKB = (candidates[0] || '').length / 1024 || 0;
+                    if (!candidates[0] || firstSizeKB < minKb) {
+                        const attempts = Math.max(1, Math.floor(tryWindowSeconds * 1000 / tryIntervalMs));
+                        for (let i = 0; i < attempts; i++) {
+                            await new Promise(r => setTimeout(r, tryIntervalMs));
+                            try {
+                                const s = await takeOne();
+                                if (s) candidates.push(s);
+                            } catch (_) { }
+                        }
+                    }
+                } catch (_) { }
+
+                if (candidates.length === 0) {
+                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: não foi possível capturar screenshot (nenhuma imagem)\n`);
+                    continue;
                 }
 
-                if (!screenshot) {
-                    screenshot = await jogo.pageContext.screenshot({
-                        encoding: 'base64',
-                        type: 'jpeg',
-                        quality: 80,
-                        clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
-                    }).catch(() => null);
+                // Strategy: take multiple quick snapshots (1s interval) for a short window and pick the best
+                // This reduces the chance of capturing during finalizing redraws. We keep the existing
+                // iframe element screenshot preference but will take several attempts and choose the
+                // largest non-blank image.
+                const extraRetriesIfSmall = 5; // extra attempts if best < minKb
+
+                let best = null; bestSize = 0;
+                for (let c of candidates) {
+                    try {
+                        const kb = (c || '').length / 1024;
+                        if (kb > bestSize) {
+                            bestSize = kb;
+                            best = c;
+                        }
+                    } catch (e) { }
                 }
 
-                if (screenshot) {
-                    const tamanhoKB = screenshot.length / 1024;
-
-                    if (tamanhoKB < 4) {
-                        process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: imagem muito pequena (${tamanhoKB.toFixed(1)}KB) — provável blank, ignorada\n`);
-                        continue;
+                if (!best || bestSize < minKb) {
+                    // If the best candidate is smaller than desired, perform a few extra attempts
+                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: melhor candidata pequena (${bestSize.toFixed(1)}KB) — tentando ${extraRetriesIfSmall} tentativas extras\n`);
+                    for (let r = 0; r < extraRetriesIfSmall; r++) {
+                        await new Promise(res => setTimeout(res, tryIntervalMs));
+                        try {
+                            const s = await takeOne();
+                            if (s) candidates.push(s);
+                        } catch (_) {}
                     }
 
-                    const dataUrl = `data:image/jpeg;base64,${screenshot}`;
+                    // re-evaluate best after extras
+                    best = null; bestSize = 0;
+                    for (let c of candidates) {
+                        try {
+                            const kb = (c || '').length / 1024;
+                            if (kb > bestSize) {
+                                bestSize = kb;
+                                best = c;
+                            }
+                        } catch (e) { }
+                    }
+
+                    if (!best || bestSize < minKb) {
+                        process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: após tentativas extras melhores candidatas ainda pequenas (${bestSize.toFixed(1)}KB) — ignorada\n`);
+                        continue;
+                    }
+                }
+
+                try {
+                    const dataUrl = `data:image/jpeg;base64,${best}`;
                     jogo.sofascoreMomentumImg = dataUrl;
                     logger.registrarScreenshotMomentum(idJogo, dataUrl);
-                    process.stdout.write(`[MOMENTUM] ✅ ${jogo.nomePartida}: ${tamanhoKB.toFixed(1)}KB (substituída)\n`);
+                    process.stdout.write(`[MOMENTUM] ✅ ${jogo.nomePartida}: ${bestSize.toFixed(1)}KB (melhor de ${candidates.length} tentativas)\n`);
+                } catch (e) {
+                    process.stderr.write(`[MOMENTUM] ❌ ${jogo.nomePartida}: falha ao salvar screenshot -> ${e && e.message ? e.message : e}\n`);
                 }
             } catch (e) {
                 process.stderr.write(`[MOMENTUM] ❌ ${jogo.nomePartida}: ${e.message}\n`);
@@ -265,10 +340,12 @@ async function iniciarRobo() {
                             }, sel);
                             await novaAba.waitForTimeout(600);
                         }
-                    } catch (e) {
+                    } catch (e) { /* ignore per-selector errors */
+                        console.warn(`[acceptSelectors] ${sel} erro: ${e}`);
                     }
                 }
-            } catch (e) {
+            } catch (e) { /* non-fatal */
+                console.warn(`[acceptSelectors] erro: ${e}`);
             }
 
             poolDeJogos.set(idJogo_unico, {
@@ -880,6 +957,4 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
-
-
 
