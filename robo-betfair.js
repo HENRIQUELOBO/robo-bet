@@ -197,12 +197,10 @@ async function iniciarRobo() {
 
                 }
 
-                const box = await iframeEl.boundingBox();
-                if (!box || box.width < 10 || box.height < 10) {
-                    process.stderr.write(`[MOMENTUM] ⚠️ ${jogo.nomePartida}: boundingBox inválido ${JSON.stringify(box)}\n`);
-                    continue;
-                }
-
+                // Instead of trying to compute a tight clip (which can fail due to cross-origin
+                // iframes or transient layout), capture the full page after a short delay.
+                // We still attempt iframeEl.screenshot() first (may work for same-origin),
+                // but fallback to a fullPage screenshot so we reliably get an image.
                 const tryDelayMs = 2000; // tempo de espera antes da captura — ajuste no servidor se necessário
                 await new Promise(r => setTimeout(r, tryDelayMs));
 
@@ -213,11 +211,12 @@ async function iniciarRobo() {
                             shot = await iframeEl.screenshot({ encoding: 'base64', type: 'jpeg', quality: 80 }).catch(() => null);
                         } catch (_) { shot = null; }
                         if (!shot) {
+                            // Take a full-page screenshot as a robust fallback.
                             shot = await jogo.pageContext.screenshot({
                                 encoding: 'base64',
                                 type: 'jpeg',
                                 quality: 80,
-                                clip: { x: Math.max(0, box.x), y: Math.max(0, box.y), width: box.width, height: box.height }
+                                fullPage: true
                             }).catch(() => null);
                         }
                         return shot;
@@ -888,4 +887,6 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
+
+
 
