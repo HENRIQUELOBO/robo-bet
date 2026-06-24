@@ -1,32 +1,42 @@
-// engine_quant.js
-
-/**
- * Motor Matemático e Computacional Lobo Quant v2.1 — Nível Profissional
- */
-
 function calcularPressaoAPM(
     historico, tempoAtual) {
     if (tempoAtual <= 0) return 0;
     const limite = Math.max(0, tempoAtual - 5);
-    return historico.filter(m => m > limite).length / 5;
+    return contarMaiorQueReverse(historico, limite) / 5;
 }
 
 function calcularMomentumMicro10(historico, tempoAtual) {
     if (tempoAtual <= 0) return 0;
     const limite = Math.max(0, tempoAtual - 10);
-    return historico.filter(m => m > limite).length;
+    return contarMaiorQueReverse(historico, limite);
 }
 
-/**
- * Aceleração de momentum: últimos 5m vs 5m anteriores.
- * > 0 = pressão crescente | < 0 = pressão a cair | = 0 = estável
- */
 function calcularAceleracao(historico, tempoAtual) {
     if (tempoAtual < 5) return 0;
     const l5  = Math.max(0, tempoAtual - 5);
     const l10 = Math.max(0, tempoAtual - 10);
-    return historico.filter(m => m > l5).length -
-           historico.filter(m => m > l10 && m <= l5).length;
+    // count recent > l5 and count in (l10, l5]
+    const last5 = contarMaiorQueReverse(historico, l5);
+    let prev5 = 0;
+    if (historico && historico.length) {
+        for (let i = historico.length - 1; i >= 0; i--) {
+            const t = historico[i];
+            if (t > l5) continue;
+            if (t > l10) prev5++;
+            else break;
+        }
+    }
+    return last5 - prev5;
+}
+
+// Efficient reverse-iteration counter: assumes timestamps ascending (old..new)
+function contarMaiorQueReverse(arr, limite) {
+    if (!arr || arr.length === 0) return 0;
+    let c = 0;
+    for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i] > limite) c++; else break;
+    }
+    return c;
 }
 
 /** Parse seguro do placar "G-G" → { gC, gF } */
@@ -49,18 +59,34 @@ const QUANT_CONFIG = {
     scoreThreshold: 0.6
 };
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-function mean(arr) { if (!arr || arr.length===0) return 0; return arr.reduce((a,b)=>a+b,0)/arr.length; }
-function calcularAceleracaoNormalizada(historico, tempoAtual) { const ac = calcularAceleracao(historico, tempoAtual); const limite = Math.max(0, tempoAtual - 10); const ataques10 = historico.filter(m => m > limite).length; return ataques10 > 0 ? ac / ataques10 : (ac>0? 1 : 0); }
-function pushPressureSample(jogo, team, sample) { const key = team === 'casa' ? '_pressureWindowCasa' : '_pressureWindowFora'; jogo[key] = jogo[key] || []; jogo[key].push(sample); if (jogo[key].length > QUANT_CONFIG.sustainedWindow) jogo[key].shift(); }
+function calcularAceleracaoNormalizada(historico, tempoAtual) { const ac = calcularAceleracao(historico, tempoAtual); const limite = Math.max(0, tempoAtual - 10); const ataques10 = contarMaiorQueReverse(historico, limite); return ataques10 > 0 ? ac / ataques10 : (ac>0? 1 : 0); }
 function isSustainedPressure(jogo, team) { const key = team === 'casa' ? '_pressureWindowCasa' : '_pressureWindowFora'; const arr = jogo[key] || []; if (arr.length < QUANT_CONFIG.sustainedWindow) return false; const truths = arr.filter(Boolean).length; return truths >= Math.ceil(QUANT_CONFIG.sustainedWindow * 0.66); }
 // --- QUANT HELPERS INSERTED END ---
 
 function processarMotorDeRegras(idJogo, jogo, alertas) {
     const minAtual = jogo.tempo;
-    // objecto de análise por método (visível no front-end via logger)
-    const analyzer = createAnalyzer();
-    // Anexa a referência do objeto de análise ao jogo desde já (é o mesmo objeto mutável)
-    try { jogo._engineAnalysis = analyzer.get(); } catch (e) { /* non-fatal */ }
+
+    // --- PERF: cache counts used multiple times in this tick (avoid repeated filters)
+    const now = minAtual;
+    const last5 = Math.max(0, now - 5);
+    const last10 = Math.max(0, now - 10);
+    const countWindow = (arr, lowerExclusive, upperInclusive = Infinity) => {
+        if (!arr || arr.length === 0) return 0;
+        let c = 0;
+        for (let i = arr.length - 1; i >= 0; i--) {
+            const t = arr[i];
+            if (t > lowerExclusive && t <= upperInclusive) c++;
+            else if (t <= lowerExclusive) break;
+        }
+        return c;
+    };
+
+    // common cached counts
+    const chAlvoCasa_last5 = countWindow(jogo.historicoChAlvoCasa, last5, Infinity);
+    const chAlvoCasa_prev5 = countWindow(jogo.historicoChAlvoCasa, last10, last5);
+    const chAlvoFora_last5 = countWindow(jogo.historicoChAlvoFora, last5, Infinity);
+    const chAlvoFora_prev5 = countWindow(jogo.historicoChAlvoFora, last10, last5);
+
     // engine entry - no debug logging (kept silent)
     // 🔬 TRAVA ANTI-FANTASMA DO INTERVALO
     if (jogo.noIntervalo && !jogo.momentumResetado2T) {
@@ -233,8 +259,9 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 const qualNorm = qualVal != null ? clamp01((qualVal - 0.05) / (0.4 - 0.05)) : 0;
                 let xgMomentNorm = 0;
                 try {
-                    const chLast5 = jogo.historicoChAlvoCasa.filter(t => t > Math.max(0, minAtual - 5)).length;
-                    const chPrev5 = jogo.historicoChAlvoCasa.filter(t => t > Math.max(0, minAtual - 10) && t <= Math.max(0, minAtual - 5)).length;
+                    // use cached counts computed above to avoid filters
+                    const chLast5 = (typeof chAlvoCasa_last5 !== 'undefined') ? chAlvoCasa_last5 : contarMaiorQueReverse(jogo.historicoChAlvoCasa, Math.max(0, minAtual - 5));
+                    const chPrev5 = (typeof chAlvoCasa_prev5 !== 'undefined') ? chAlvoCasa_prev5 : (contarMaiorQueReverse(jogo.historicoChAlvoCasa, Math.max(0, minAtual - 10)) - chLast5);
                     const deltaCh = chLast5 - chPrev5;
                     xgMomentNorm = clamp01((deltaCh + 1) / 3);
                 } catch (e) { xgMomentNorm = 0; }
@@ -304,8 +331,9 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
                 const qualNorm = qualVal != null ? clamp01((qualVal - 0.05) / (0.4 - 0.05)) : 0;
                 let xgMomentNorm = 0;
                 try {
-                    const chLast5 = jogo.historicoChAlvoFora.filter(t => t > Math.max(0, minAtual - 5)).length;
-                    const chPrev5 = jogo.historicoChAlvoFora.filter(t => t > Math.max(0, minAtual - 10) && t <= Math.max(0, minAtual - 5)).length;
+                    // use cached counts computed above to avoid filters
+                    const chLast5 = (typeof chAlvoFora_last5 !== 'undefined') ? chAlvoFora_last5 : contarMaiorQueReverse(jogo.historicoChAlvoFora, Math.max(0, minAtual - 5));
+                    const chPrev5 = (typeof chAlvoFora_prev5 !== 'undefined') ? chAlvoFora_prev5 : (contarMaiorQueReverse(jogo.historicoChAlvoFora, Math.max(0, minAtual - 10)) - chLast5);
                     const deltaCh = chLast5 - chPrev5;
                     xgMomentNorm = clamp01((deltaCh + 1) / 3);
                 } catch (e) { xgMomentNorm = 0; }
@@ -357,7 +385,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             alertas.golIminente2TFora = true;
             analyzer.setMet('GATILHO_2T_FORA');
             const ctx = difGols > 0 ? '🔴 Fora a perder' : '🟡 Empate';
-            const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\n🏟️ ${jogo.nomePartida}\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora}\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
+            const msg = `🚨 *WOLF QUANT - GATILHO 2T FORA*\\n🏟️ ${jogo.nomePartida}\\n⏱️ ${minAtual}' | ${ctx} | xG: ${jogo.xgCasa.toFixed(2)}-${jogo.xgFora.toFixed(2)}\\n📊 APM Fora: ${apmFora.toFixed(2)} | Aceleração: ${acFora > 0 ? '+' : ''}${acFora}\\n🔬 AtqP Fora: ${jogo.momentum.ataquesFora} | Ch+Esc: ${jogo.momentum.chutesNoAlvoFora + jogo.momentum.escanteiosFora}`;
             require('./logger').enviarAlertaTelegram(idJogo, jogo, msg, "GATILHO_2T_FORA");
         }
 

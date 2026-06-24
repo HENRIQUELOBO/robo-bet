@@ -1,10 +1,14 @@
 try {
     require('dotenv').config();
-} catch (e) { /* optional */
+} catch (e) {
 }
 const puppeteer = require('puppeteer');
 const readline = require('readline');
+const fs = require('fs');
 let globalBrowser = null;
+
+const DEBUG_BLOCKED = process.env.DEBUG_BLOCKED_REQUESTS === '1';
+const WHITELIST_HOSTNAMES = (process.env.WHITELIST_HOSTNAMES || '').split(',').map(s => s.trim()).filter(Boolean);
 
 const engine = require('./engine_quant');
 const logger = require('./logger');
@@ -36,16 +40,28 @@ function renderizarPainelTerminal() {
             statusLinha = "⏸️ INTERVALO";
         } else {
             const alertas = alertasDisparadosPorJogo.get(id);
-            if (alertas && alertas.golIminente2T) statusLinha = "🚨 GATILHO 2T!";
-            else if (alertas && alertas.golIminente2TFora) statusLinha = "🚨 GATILHO 2T FORA";
-            else if (alertas && alertas.favoritoVira) statusLinha = "🔄 FAVORITO VIRA";
-            else if (alertas && alertas.favoritoVence) statusLinha = "💰 FAVORITO VENCE";
-            else if (alertas && alertas.golIminente1T) statusLinha = "🔥 GATILHO 1T!";
-            else if (alertas && alertas.golIminente1TFora) statusLinha = "🔥 GATILHO 1T FORA";
-            else if (alertas && alertas.layDraw) statusLinha = "🏆 LAY DRAW";
-            else if (alertas && alertas.lay01) statusLinha = "⚡ LAY 0x1";
-            else if (alertas && alertas.lay10) statusLinha = "⚡ LAY 1x0";
-            else if (alertas && alertas.lay00) statusLinha = "🔵 LAY 0x0";
+
+            if (alertas) {
+                const orderedChecks = [
+                    ['goliminente2t',        "🚨 gatilho 2t!"],
+                    ['goliminente2tfora',    "🚨 gatilho 2t fora"],
+                    ['favoritovira',         "🔄 favorito vira"],
+                    ['favoritovence',        "💰 favorito vence"],
+                    ['goliminente1t',        "🔥 gatilho 1t!"],
+                    ['goliminente1tfora',    "🔥 gatilho 1t fora"],
+                    ['laydraw',              "🏆 lay draw"],
+                    ['lay01',                "⚡ lay 0x1"],
+                    ['lay10',                "⚡ lay 1x0"],
+                    ['lay00',                "🔵 lay 0x0"]
+                ];
+
+                for (const [flag, text] of orderedChecks) {
+                    if (alertas[flag]) {
+                        statuslinha = text;
+                        break;
+                    }
+                }
+            }
         }
 
         console.log(`🏟️ Partida:  ${jogo.nomePartida.padEnd(55)}`);
@@ -98,12 +114,10 @@ async function iniciarRobo() {
                         // disparar eventos de visibilidade caso algum listener dependa disso
                         document.dispatchEvent(new Event('visibilitychange'));
                     } catch (e) {}
-                    // reduzir timers agressivos (substituir setInterval / setTimeout não recomendado globalmente)
                 });
 
                 await novaAba.setRequestInterception(true);
                 const thirdPartyPattern = /goog(le|analytics)|doubleclick|analytics|tracker|track|ads|adservice|cdn-cgi|facebook|pixel|hotjar|mixpanel|segment|amplitude/i;
-                const allowedHostnames = [];
                 novaAba.on('request', req => {
                     const pt = req.resourceType();
                     const url = req.url();
@@ -112,12 +126,33 @@ async function iniciarRobo() {
                         const hostname = u.hostname || '';
 
                         // Bloquear recursos pesados e scripts de terceiros conhecidos
-                        if (pt === 'image' || pt === 'stylesheet' || pt === 'font') return req.abort();
-                        if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) return req.abort();
-                        // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
-                        if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) return req.abort();
+                        const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
+                        if (!isWhitelisted) {
+                            if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
+                                if (DEBUG_BLOCKED) {
+                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                }
+                                return req.abort();
+                            }
 
-                        // permitir o resto
+                            if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
+                                if (DEBUG_BLOCKED) {
+                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                }
+
+                                return req.abort();
+                            }
+
+
+                            if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
+                                if (DEBUG_BLOCKED) {
+                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                }
+
+                                return req.abort();
+                            }
+                        }
+
                         return req.continue();
                     } catch (e) {
                         return req.continue();
@@ -142,7 +177,9 @@ async function iniciarRobo() {
                         if (el) {
                             await novaAba.evaluate(s => {
                                 const e = document.querySelector(s);
-                                if (e) e.click();
+                                if (e) {
+                                    e.click();
+                                }
                             }, sel);
                             await novaAba.waitForTimeout(600);
                         }
@@ -229,6 +266,17 @@ async function iniciarRobo() {
             if (poolDeJogos.size === 0) return;
 
             for (let [idJogo, jogo] of poolDeJogos.entries()) {
+                // Stagger checks per jogo to avoid picos quando há muitos jogos
+                try {
+                    const now = Date.now();
+                    const perGameInterval = 10000; // mínimo entre checks por jogo (ms)
+                    const jitter = jogo._jitter || (jogo._jitter = Math.floor(Math.random() * 3000));
+                    if (jogo._lastCheck && (now - jogo._lastCheck) < (perGameInterval + jitter)) {
+                        continue;
+                    }
+                    jogo._lastCheck = now;
+                } catch (e) {}
+
                 try {
                     const dadosContexto = await jogo.pageContext.evaluate(() => {
                         let info = {timeCasa: '', timeFora: '', tituloAba: document.title};
@@ -358,8 +406,8 @@ async function iniciarRobo() {
                         } catch (e) {
                         }
 
-                        let nósTexto = Array.from(document.querySelectorAll('div, span, p, b')).map(el => el.textContent ? el.textContent.trim() : '');
-                        let matchPlacar = nósTexto.find(t => /^\d+\s*-\s*\d+$/.test(t));
+                        let noTexto = Array.from(document.querySelectorAll('div, span, p, b')).map(el => el.textContent ? el.textContent.trim() : '');
+                        let matchPlacar = noTexto.find(t => /^\d+\s*-\s*\d+$/.test(t));
                         if (matchPlacar) placarLocal = matchPlacar.replace(/\s+/g, '');
 
                         let momentumSrc = '';
@@ -644,10 +692,22 @@ async function iniciarRobo() {
                             const hostname = u.hostname || '';
 
                             // Bloquear recursos pesados e scripts de terceiros conhecidos
-                            if (pt === 'image' || pt === 'stylesheet' || pt === 'font') return req.abort();
-                            if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) return req.abort();
-                            // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
-                            if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) return req.abort();
+                            const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
+                            if (!isWhitelisted) {
+                                if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
+                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                    return req.abort();
+                                }
+                                if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
+                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                    return req.abort();
+                                }
+                                // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
+                                if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
+                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                    return req.abort();
+                                }
+                            }
 
                             // permitir o resto
                             return req.continue();
@@ -801,6 +861,4 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
-
-
 

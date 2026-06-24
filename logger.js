@@ -233,8 +233,8 @@ async function enviarAlertaTelegram(idJogo, jogo, mensagem, metodoAtivado) {
     }
 }
 
-function registrarScreenshotMomentum(jogoId, base64Img) {
-    if (jogoId && base64Img) _screenshotsMomentum.set(String(jogoId), base64Img);
+function registrarScreenshotMomentum(jogoId, baseImg) {
+    if (jogoId && baseImg) _screenshotsMomentum.set(String(jogoId), baseImg);
 }
 
 function removerScreenshotMomentum(jogoId) {
