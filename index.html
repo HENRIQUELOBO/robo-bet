@@ -14,8 +14,13 @@
         #modal-analysis { display:none; position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center; }
         #modal-analysis.open { display:flex; }
         #modal-momentum img { max-width:92vw; max-height:88vh; border-radius:12px; border:1px solid #374151; box-shadow:0 0 60px rgba(0,0,0,0.8); }
-        .momentum-thumb { cursor:zoom-in; transition:opacity .2s; }
-        .momentum-thumb:hover { opacity:.85; }
+        .momentum-thumb { cursor:zoom-in; }
+        .momentum-thumb:hover { opacity:.95; }
+        /* cross-fade layers for momentum images */
+        .momentum-container { position:relative; width:100%; min-height:80px; background:#030712; overflow:hidden; }
+        .momentum-container img { display:block; width:100%; height:auto; border-radius:0; }
+        .momentum-layer { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; transition:opacity 260ms ease-in-out; opacity:1; }
+        .momentum-layer.next { opacity:0; }
         .engine-badge { transition: transform .12s ease; }
         .engine-badge:hover { transform: translateY(-2px); }
     </style>
@@ -96,6 +101,37 @@
         // Cache local de screenshots — evita re-render quando base64 não mudou
         const _imgCache = {};
 
+        // Cross-fade helper: containerId is 'momentum-container-<id>' and expects two imgs inside:
+        // #momentum-current-<id> (visible) and #momentum-next-<id> (overlay, opacity 0)
+        function crossfadeMomentum(jogoId, newSrc) {
+            try {
+                const cur = document.getElementById(`momentum-current-${jogoId}`);
+                const nxt = document.getElementById(`momentum-next-${jogoId}`);
+                if (!cur || !nxt) return;
+                // If newSrc equals current src, do nothing
+                if (!newSrc || cur.src === newSrc) return;
+                // Load into preloader to ensure it's valid before showing
+                const pre = new Image();
+                pre.onload = function() {
+                    nxt.src = newSrc;
+                    // trigger fade in
+                    requestAnimationFrame(() => { nxt.classList.add('visible'); nxt.style.opacity = 1; nxt.classList.remove('next'); });
+                    // after transition, swap urls and reset overlay
+                    const onEnd = function() {
+                        try { cur.src = newSrc; } catch(e) {}
+                        nxt.style.opacity = 0;
+                        nxt.src = '';
+                        nxt.removeEventListener('transitionend', onEnd);
+                    };
+                    nxt.addEventListener('transitionend', onEnd);
+                    // safety fallback: if transitionend doesn't fire, reset after 600ms
+                    setTimeout(() => { if (nxt.src === newSrc) { try { cur.src = newSrc; } catch(e){} nxt.style.opacity = 0; nxt.src = ''; } }, 700);
+                };
+                pre.onerror = function() { /* don't change image on error */ };
+                pre.src = newSrc;
+            } catch (e) { /* non-fatal */ }
+        }
+
         async function adicionarJogo() {
             const input = document.getElementById('input-url');
             const btn = document.getElementById('btn-iniciar');
@@ -142,14 +178,26 @@
             if (e.key === 'Enter') adicionarJogo();
         });
 
+        // Incremental update: do not clear the entire grid on each SSE event to avoid flicker.
+        // For each incoming jogo: if a card exists, update its fields; if not, create it.
+        // Also remove cards that are no longer present in the payload.
         eventSource.onmessage = function(event) {
             const jogos = JSON.parse(event.data);
             _latestJogos = jogos;
+            // handle empty list
             if (jogos.length === 0) {
                 gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Cole uma URL acima para começar a monitorar.</div>`;
                 return;
             }
-            gridJogos.innerHTML = '';
+
+            const incomingIds = new Set(jogos.map(j => String(j.id)));
+            // remove stale cards (that are not in incoming payload)
+            Array.from(gridJogos.querySelectorAll('.jogo-card')).forEach(card => {
+                const id = card.getAttribute('data-jogo-id');
+                if (!incomingIds.has(String(id))) {
+                    card.remove();
+                }
+            });
 
             jogos.forEach(jogo => {
                 // sanitize incoming jogo object: remove literal '-' placeholders
@@ -174,10 +222,19 @@
                         _imgCache[jogo.id] = { ts: jogo.sofascoreMomentumTs, img: jogo.sofascoreMomentumImg };
                     }
                 }
-                const momentumImg = _imgCache[jogo.id]?.img || null;
-                const totalAtq = (jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora) || 1;
-                const pctCasaAPM = Math.round((jogo.momentum.ataquesCasa / totalAtq) * 100);
-                const pctForaAPM = 100 - pctCasaAPM;
+
+                const totalAtqRaw = Number(jogo.momentum.ataquesCasa || 0) + Number(jogo.momentum.ataquesFora || 0);
+                let pctCasaAPM = 0;
+                let pctForaAPM = 0;
+                // if both sides have the same raw value (including both zero), show neutral 50/50
+                if (Number(jogo.momentum.ataquesCasa || 0) === Number(jogo.momentum.ataquesFora || 0) || totalAtqRaw === 0) {
+                    pctCasaAPM = 50;
+                    pctForaAPM = 50;
+                } else {
+                    const totalAtq = totalAtqRaw || 1;
+                    pctCasaAPM = Math.round((Number(jogo.momentum.ataquesCasa) / totalAtq) * 100);
+                    pctForaAPM = 100 - pctCasaAPM;
+                }
 
                 const posseCasa = parseInt(jogo.posseBolaCasa) || 50;
                 const posseFora = parseInt(jogo.posseBolaFora) || (100 - posseCasa);
@@ -209,21 +266,21 @@
                 const cardHtml = `
                     <div class="border rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 ${cardBorda} jogo-card" data-jogo-id="${jogo.id}">
                         <div class="flex justify-between items-center mb-4">
-                            <span class="font-mono text-xs font-black tracking-wider bg-gray-950 px-2.5 py-1 rounded-md text-amber-500 border border-gray-800">⏱️ ${jogo.noIntervalo ? 'HT' : jogo.tempo + "'"}</span>
+                            <span class="jogo-tempo font-mono text-xs font-black tracking-wider bg-gray-950 px-2.5 py-1 rounded-md text-amber-500 border border-gray-800">⏱️ ${jogo.noIntervalo ? 'HT' : jogo.tempo + "'"}</span>
                             <div class="flex items-center">
-                                <span class="text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge} cursor-pointer" onclick="event.stopPropagation(); showSignalData('${jogo.id}')">${jogo.statusGatilho}</span>
+                                <span class="jogo-status text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge} cursor-pointer" onclick="event.stopPropagation(); showSignalData('${jogo.id}')">${jogo.statusGatilho}</span>
                                 ${analysisIndicator}
                             </div>
                         </div>
 
                         <div class="text-center my-1">
-                            <h2 class="text-md font-bold text-gray-100 tracking-tight truncate px-2">${jogo.nomePartida}</h2>
-                            <div class="text-3xl font-black font-mono tracking-widest text-amber-500 my-2 bg-gray-950 py-1.5 rounded-xl border border-gray-800/60 shadow-inner">${jogo.placar || '0 - 0'}</div>
+                            <h2 class="jogo-nome text-md font-bold text-gray-100 tracking-tight truncate px-2">${jogo.nomePartida}</h2>
+                            <div class="jogo-placar text-3xl font-black font-mono tracking-widest text-amber-500 my-2 bg-gray-950 py-1.5 rounded-xl border border-gray-800/60 shadow-inner">${jogo.placar || '0 - 0'}</div>
                         </div>
 
                         <div class="grid grid-cols-2 gap-2 text-2xs font-mono bg-gray-950/50 p-2.5 rounded-xl border border-gray-900 my-2">
-                            <div class="text-gray-400">🤖 xG CASA: <span class="text-amber-500 font-bold">${jogo.xgCasa.toFixed(2)}</span></div>
-                            <div class="text-right text-gray-400">🤖 xG FORA: <span class="text-gray-200 font-bold">${jogo.xgFora.toFixed(2)}</span></div>
+                            <div class="text-gray-400">🤖 xG CASA: <span class="text-amber-500 font-bold jogo-xg-casa">${jogo.xgCasa.toFixed(2)}</span></div>
+                            <div class="text-right text-gray-400">🤖 xG FORA: <span class="text-gray-200 font-bold jogo-xg-fora">${jogo.xgFora.toFixed(2)}</span></div>
                             <div class="col-span-2 border-t border-gray-900/60 my-1"></div>
                             <div class="col-span-2 text-center text-amber-400 font-black tracking-wide">🔥 MOMENTUM: ${jogo.pressao.toFixed(2)} AP/Min</div>
                         </div>
@@ -252,31 +309,31 @@
 -
                         <div class="mt-2">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
-                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60">CASA: <strong class="text-amber-500">${jogo.momentum.ataquesCasa} AP</strong></span>
+                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60">CASA: <strong class="text-amber-500 jogo-ataques-casa">${jogo.momentum.ataquesCasa} AP</strong></span>
                                 <span class="font-bold tracking-wider text-gray-500 text-3xs">📊 VELOCIDADE APM (10M)</span>
-                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60 text-right">FORA: <strong class="text-gray-300">${jogo.momentum.ataquesFora} AP</strong></span>
+                                <span class="bg-gray-950/80 px-1.5 py-0.5 rounded border border-gray-900/60 text-right">FORA: <strong class="text-gray-300 jogo-ataques-fora">${jogo.momentum.ataquesFora} AP</strong></span>
                             </div>
                             <div class="w-full bg-gray-950 rounded-full h-3 flex overflow-hidden border border-gray-800 shadow-inner">
-                                <div class="bg-amber-500 h-full transition-all duration-500 flex justify-end items-center pr-1" style="width: ${pctCasaAPM}%">${pctCasaAPM > 18 ? `<span class="text-3xs font-black text-gray-950">${pctCasaAPM}%</span>` : ''}</div>
-                                <div class="bg-gray-700 h-full transition-all duration-500 flex justify-start items-center pl-1" style="width: ${pctForaAPM}%">${pctForaAPM > 18 ? `<span class="text-3xs font-black text-white">${pctForaAPM}%</span>` : ''}</div>
+                                <div class="jogo-apm-casa bg-amber-500 h-full transition-all duration-500 flex justify-end items-center pr-1" style="width: ${pctCasaAPM}%">${pctCasaAPM > 18 ? `<span class="text-3xs font-black text-gray-950">${pctCasaAPM}%</span>` : ''}</div>
+                                <div class="jogo-apm-fora bg-gray-700 h-full transition-all duration-500 flex justify-start items-center pl-1" style="width: ${pctForaAPM}%">${pctForaAPM > 18 ? `<span class="text-3xs font-black text-white">${pctForaAPM}%</span>` : ''}</div>
                             </div>
                         </div>
 -
                         <div class="mt-2.5">
                             <div class="flex justify-between items-center text-3xs font-mono text-gray-400 mb-1 px-0.5">
-                                <span class="${posseCasa >= 60 ? 'text-red-400' : 'text-amber-500/90'} font-semibold">${posseCasa}%</span>
+                                <span class="jogo-posse-casa ${posseCasa >= 60 ? 'text-red-400' : 'text-amber-500/90'} font-semibold">${posseCasa}%</span>
                                 <span class="font-bold tracking-wider text-gray-500 text-3xs">🔄 POSSE DE BOLA JOGO</span>
-                                <span class="${posseFora >= 60 ? 'text-red-400' : 'text-gray-400'} font-semibold text-right">${posseFora}%</span>
+                                <span class="jogo-posse-fora ${posseFora >= 60 ? 'text-red-400' : 'text-gray-400'} font-semibold text-right">${posseFora}%</span>
                             </div>
                             <div class="w-full bg-gray-950 rounded-full h-2 flex overflow-hidden border border-gray-800/50">
-                                <div class="h-full transition-all duration-500 ${posseCasa >= 60 ? 'bg-red-500' : 'bg-gradient-to-r from-amber-600 to-amber-500'}" style="width: ${posseCasa}%"></div>
-                                <div class="h-full transition-all duration-500 ${posseFora >= 60 ? 'bg-red-500' : 'bg-gray-600'}" style="width: ${posseFora}%"></div>
+                                <div class="jogo-posse-bar-casa h-full transition-all duration-500 ${posseCasa >= 60 ? 'bg-red-500' : 'bg-gradient-to-r from-amber-600 to-amber-500'}" style="width: ${posseCasa}%"></div>
+                                <div class="jogo-posse-bar-fora h-full transition-all duration-500 ${posseFora >= 60 ? 'bg-red-500' : 'bg-gray-600'}" style="width: ${posseFora}%"></div>
                             </div>
                         </div>
 -
                         <div class="mt-3 bg-gray-950/40 border border-gray-900 rounded-xl p-2 text-2xs font-mono">
                             <div class="text-center font-bold text-gray-500 text-3xs tracking-wider border-b border-gray-900/50 pb-1 mb-1.5">📊 QUADRO 1: TELEMETRIA TOTAL (MACRO)</div>
-                            <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Atq. Perigosos:</span><span class="text-amber-500 font-bold">${jogo.atqPerigososCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.atqPerigososFora}</span></div>
+                            <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Atq. Perigosos:</span><span class="text-amber-500 font-bold jogo-atq-perig-casa">${jogo.atqPerigososCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold jogo-atq-perig-fora">${jogo.atqPerigososFora}</span></div>
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.chutesNoAlvoCasa}/${jogo.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.chutesNoAlvoFora}/${jogo.chutesParaForaFora}</span></div>
                             <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.escanteiosFora}</span></div>
                         </div>
@@ -290,473 +347,540 @@
                         ${jogo.id ? `
                         <div class="mt-2 rounded-xl overflow-hidden border border-gray-800/60 bg-gray-950/30">
                             <div class="text-center font-bold text-gray-500 text-3xs tracking-wider py-1 border-b border-gray-900/50">📈 SOFASCORE — MOMENTUM</div>
-                            <img
-                                id="momentum-img-${jogo.id}"
-                                src="${new URL(`/screenshot/${jogo.id}`, API_BASE).toString()}?t=${Date.now()}"
-                                onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
-                                onload="this.style.display='block';this.nextElementSibling.style.display='none';"
-                                onclick="abrirModal(this.src)"
-                                class="momentum-thumb"
-                                style="width:100%;display:block;min-height:80px;background:#030712;"
-                                alt="Momentum Chart"
-                            />
+                            <div id="momentum-container-${jogo.id}" class="momentum-container">
+                                <img id="momentum-current-${jogo.id}" class="momentum-layer current momentum-thumb" src="${new URL(`/screenshot/${jogo.id}`, API_BASE).toString()}?t=${Date.now()}" onclick="abrirModal(this.src)" alt="Momentum Chart" />
+                                <img id="momentum-next-${jogo.id}" class="momentum-layer next" src="" aria-hidden="true" />
+                            </div>
                             <div style="display:none;" class="text-center text-gray-600 text-3xs font-mono py-4">⏳ Aguardando screenshot (~30s)...</div>
                         </div>` : ''}
                     </div>
                 `;
-                gridJogos.innerHTML += cardHtml;
-                // cleanup: remove any text-only nodes that contain only a lone hyphen '-'
-                try {
-                    setTimeout(() => {
-                        const cardEl = gridJogos.querySelector(`.jogo-card[data-jogo-id="${jogo.id}"]`);
-                        if (!cardEl) return;
-                        const walker = document.createTreeWalker(cardEl, NodeFilter.SHOW_TEXT, null, false);
-                        const toRemove = [];
-                        while (walker.nextNode()) {
-                            const txt = walker.currentNode.nodeValue;
-                            if (typeof txt === 'string' && txt.trim() === '-') toRemove.push(walker.currentNode);
+                // If card exists, update only its inner content to avoid recreating the element
+                const existing = gridJogos.querySelector(`.jogo-card[data-jogo-id="${jogo.id}"]`);
+                if (existing) {
+                    // Update fields in-place to avoid replacing DOM nodes (no innerHTML assignment)
+                    try {
+                        // tempo
+                        const tempoEl = existing.querySelector('.jogo-tempo');
+                        if (tempoEl) tempoEl.textContent = `⏱️ ${jogo.noIntervalo ? 'HT' : jogo.tempo + "'"}`;
+                        // status
+                        const statusEl = existing.querySelector('.jogo-status');
+                        if (statusEl) {
+                            statusEl.textContent = jogo.statusGatilho;
+                            statusEl.className = 'jogo-status text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ' + statusBadge + ' cursor-pointer';
                         }
-                        for (const n of toRemove) n.nodeValue = '';
-                    }, 50);
-                } catch (e) { /* non-fatal */ }
-            });
-        };
-        eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
-
-        // Actualiza as imagens de momentum a cada 30s sem re-renderizar os cards
-        setInterval(() => {
-            document.querySelectorAll('[id^="momentum-img-"]').forEach(img => {
-                const jogoId = img.id.replace('momentum-img-', '');
-                img.src = `http://${VPS_IP}:3000/screenshot/${jogoId}?t=${Date.now()}`;
-            });
-        }, 30000);
-
-        // --- Modal de Análise de Métodos (Engine) ---
-        function toggleAnalysis(jogoId) {
-            const modal = document.getElementById('modal-analysis');
-            const content = document.getElementById('modal-analysis-content');
-            if (!modal || !content) return;
-            // find jogo in latest payload
-            const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
-            // prefer engineAnalysis, fallback to internal _engineAnalysis if present
-            const analysisSource = (jogo && (jogo.engineAnalysis || jogo._engineAnalysis)) || null;
-            // debug: log raw analysis to browser console for inspection (safe stringify)
-            try {
-                let dumped = analysisSource;
-                try { dumped = JSON.stringify(analysisSource, null, 2); } catch (e) { dumped = String(analysisSource); }
-            } catch (_) { /* non-fatal debug */ }
-            // Extract possible telegram message from known locations (logger may attach it)
-            const telegramMsg = (jogo && (jogo.telegramMessage || jogo.lastTelegramMessage || jogo._lastTelegram || jogo.telegram || jogo.lastTelegram)) || (analysisSource && (analysisSource.sentMessage || analysisSource.telegram || analysisSource.telegramMessage)) || null;
-
-            if (!jogo || !analysisSource) {
-                content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
-                try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
-            } else {
-                content.innerHTML = renderEngineAnalysis(jogo, analysisSource, telegramMsg);
-            }
-            // Atualiza o título do modal com nome da partida, tempo atual e placar
-            try {
-                const titleEl = document.getElementById('modal-analysis-title');
-                if (titleEl && jogo) {
-                    const nome = jogo.nomePartida || '';
-                    const tempo = jogo.noIntervalo ? 'HT' : (jogo.tempo ? String(jogo.tempo) + "'" : '');
-                    const placar = jogo.placar || '';
-                    titleEl.textContent = `${nome}${tempo ? ' — ' + tempo : ''}${placar ? ' — ' + placar : ''}`;
-                }
-            } catch (e) { /* non-fatal */ }
-            modal.classList.add('open');
-            // reset draggable position when opening (centered)
-            const box = document.getElementById('modal-analysis-box');
-            const modalEl = document.getElementById('modal-analysis');
-            if (box && modalEl) {
-                // clear inline left/top to allow centering via modal flexbox
-                box.style.left = '';
-                box.style.top = '';
-                box.style.transform = '';
-                modalEl.style.alignItems = 'center';
-                modalEl.style.justifyContent = 'center';
-            }
-        }
-        function closeAnalysis() { document.getElementById('modal-analysis').classList.remove('open'); }
-
-        // Make the analysis modal draggable by its title
-        (function(){
-            const modal = document.getElementById('modal-analysis');
-            const box = document.getElementById('modal-analysis-box');
-            const title = document.getElementById('modal-analysis-title');
-            if (!modal || !box || !title) return;
-            title.style.cursor = 'move';
-            let dragging = false; let startX=0, startY=0, origLeft=0, origTop=0;
-
-            const onDown = (e)=>{
-                e.preventDefault();
-                dragging = true;
-                const rect = box.getBoundingClientRect();
-                origLeft = rect.left;
-                origTop = rect.top;
-                startX = (e.touches ? e.touches[0].clientX : e.clientX);
-                startY = (e.touches ? e.touches[0].clientY : e.clientY);
-                // switch modal to top-left anchored so we can position absolutely
-                modal.style.alignItems = 'flex-start';
-                modal.style.justifyContent = 'flex-start';
-                box.style.position = 'fixed';
-                box.style.margin = '0';
-                box.style.left = origLeft + 'px';
-                box.style.top = origTop + 'px';
-                box.style.transform = '';
-            };
-            const onMove = (e)=>{
-                if(!dragging) return;
-                const cx = (e.touches ? e.touches[0].clientX : e.clientX);
-                const cy = (e.touches ? e.touches[0].clientY : e.clientY);
-                const dx = cx - startX; const dy = cy - startY;
-                box.style.left = (origLeft + dx) + 'px';
-                box.style.top = (origTop + dy) + 'px';
-            };
-            const onUp = ()=>{ dragging = false; };
-            title.addEventListener('mousedown', onDown);
-            title.addEventListener('touchstart', onDown,{passive:false});
-            window.addEventListener('mousemove', onMove);
-            window.addEventListener('touchmove', onMove,{passive:false});
-            window.addEventListener('mouseup', onUp);
-            window.addEventListener('touchend', onUp);
-        })();
-
-        function renderEngineAnalysis(jogo, analysis, telegramMsg) {
-            // friendly mapping for criteria codes
-            const friendly = {
-                emCooldown: 'Em cooldown após golo (aguardar)',
-                janelaTempo: 'Tempo de Jogo',
-                'dominancia<2.0': 'Dominancia time (min 2)',
-                'apmDominante<0.8': 'APM dominante (min 0.8)',
-                'atqDominante<8': 'Ataques do time dominante (min 8)',
-                'difGols>1': 'Diferença de golos alta (não elegível)',
-                'qualDominante>=18%': 'Qualidade do ataque (time dominante) — mín 18%',
-                'posseConfirma': 'Posse confirmatória (mín 55%)',
-                'difGols>0': 'Diferença de golos > 0 — equipa em vantagem (não elegível para gatilho)',
-                'difGolsFora': 'Diferença de golos fora do intervalo permitido',
-                'ataquesCasa<10': 'Ataques Perigosos(mín 10)',
-                'ataquesFora<10': 'Ataques Perigosos(min 10)',
-                'chutesNoAlvoCasa<2': 'Chute no alvo(min 2)',
-                'chutesNoAlvoFora<2': 'Chute no alvo(min 2)',
-                aceleracaoNegativa: 'Aceleração negativa (sem crescimento)',
-                qualidadeBaixa: 'Qualidade do ataque baixa',
-                sustainedPressure: 'Pressão sustentada (sustained pressure)',
-                score: 'Score esperado / confidence',
-                'chutesNoAlvoCasa+escanteios<3': 'Chute no alvo + Escanteios(min 3)',
-                'chutesNoAlvoFora+escanteios<3': 'Chutes ao alvo + Escanteios(min 3)',
-                'ch+esc<3': 'Chute no alvo + Escanteios(min 3)',
-                'ch+esc': 'Chute no alvo + Escanteios',
-                'qualidadeN/D': 'Qualidade do ataque (N/D)',
-            };
-
-            // Período de tempo (janela) por método — exibido no cabeçalho para clareza
-            const methodPeriods = {
-                'GATILHO_1T': "Janela: 15'–40'",
-                'GATILHO_1T_FORA': "Janela: 15'–40'",
-                'GATILHO_2T': "Janela: 46'–85'",
-                'GATILHO_2T_FORA': "Janela: 46'–85'",
-                'LAY_DRAW': "Janela: 25'–80'",
-                'FAVORITO_VENCE': "Janela: 15'–70'",
-                'FAVORITO_VIRA': "Janela: 20'–75'"
-            };
-
-            // Default expected criteria per method (used when analyzer reported empty missing array)
-            const defaultCriteria = {
-                'GATILHO_1T': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
-                'GATILHO_1T_FORA': ['janelaTempo', 'difGolsFora', 'ataquesFora<10', 'chutesNoAlvoFora<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
-                'GATILHO_2T': ['janelaTempo', 'difGols>0', 'ataquesCasa<12', 'score', 'sustainedPressure', 'ch+esc<3', 'chutesNoAlvoCasa+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
-                'GATILHO_2T_FORA': ['janelaTempo', 'ataquesFora<12', 'chutesNoAlvoFora+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
-                'LAY_DRAW': ['janelaTempo', 'empate', 'dominancia<2.0', 'apmDominante<0.8', 'atqDominante<8', 'qualidadeBaixa'],
-                'FAVORITO_VENCE': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
-                'FAVORITO_VIRA': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa']
-            };
-
-            let html = '';
-            html += '<div class="space-y-3">';
-            const rawTempo = jogo && jogo.tempo ? String(jogo.tempo) : '';
-            const minAtual = parseInt((rawTempo || '').replace(/[^0-9]/g, ''), 10) || 0;
-            const hideFirstHalf = minAtual > 45; // if in second half hide first-half-only methods
-            const firstHalfMethods = new Set(['GATILHO_1T','GATILHO_1T_FORA']);
-            for (const method in analysis) {
-                // omit legacy / removed methods that may still appear in stored analysis
-                if (String(method).toUpperCase() === 'LAY_0X0') continue;
-                if (hideFirstHalf && firstHalfMethods.has(method)) continue;
-                const entry = analysis[method] || { met: false, missing: [] };
-                const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
-                const periodLabel = methodPeriods[method] ? `<div class="text-2xs text-gray-400">${methodPeriods[method]}</div>` : '';
-                html += `<div class="flex justify-between items-center mb-1"><div><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${periodLabel}</div>${statusBadge}</div>`;
-                if (entry.met) {
-                    // show which criteria were expected/satisfied when met (prefer explicit satisfied list)
-                    let satisfied = entry.satisfied && entry.satisfied.length ? entry.satisfied.slice() : (entry.expected ? entry.expected.slice() : []);
-                    // Ensure the time-window criterion appears in the satisfied list for clarity
-                    if (methodPeriods[method] && !satisfied.includes('janelaTempo')) satisfied.push('janelaTempo');
-                    if (satisfied.length === 0) {
-                        html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
-                    } else {
-                        html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
-                        for (const crit of satisfied) {
-                            const friendlyText = friendly[crit] || crit;
-                            html += `<li class="text-emerald-300">${friendlyText}</li>`;
+                        // nome e placar
+                        const nomeEl = existing.querySelector('.jogo-nome'); if (nomeEl) nomeEl.textContent = jogo.nomePartida;
+                        const placarEl = existing.querySelector('.jogo-placar'); if (placarEl) placarEl.textContent = jogo.placar || '0 - 0';
+                        // xG
+                        const xgCasaEl = existing.querySelector('.jogo-xg-casa'); if (xgCasaEl) xgCasaEl.textContent = jogo.xgCasa.toFixed(2);
+                        const xgForaEl = existing.querySelector('.jogo-xg-fora'); if (xgForaEl) xgForaEl.textContent = jogo.xgFora.toFixed(2);
+                        // ataques APM
+                        const atqCasaEl = existing.querySelector('.jogo-ataques-casa'); if (atqCasaEl) atqCasaEl.textContent = `${jogo.momentum.ataquesCasa} AP`;
+                        const atqForaEl = existing.querySelector('.jogo-ataques-fora'); if (atqForaEl) atqForaEl.textContent = `${jogo.momentum.ataquesFora} AP`;
+                        // apm bars
+                        const apmCasaBar = existing.querySelector('.jogo-apm-casa'); if (apmCasaBar) {
+                            apmCasaBar.style.width = pctCasaAPM + '%';
+                            // update or create child percent label without replacing outer html to avoid flicker
+                            let pctEl = apmCasaBar.querySelector('.jogo-apm-casa-pct');
+                            if (pctCasaAPM > 18) {
+                                if (!pctEl) {
+                                    pctEl = document.createElement('span');
+                                    pctEl.className = 'jogo-apm-casa-pct text-3xs font-black text-gray-950';
+                                    apmCasaBar.appendChild(pctEl);
+                                }
+                                pctEl.textContent = pctCasaAPM + '%';
+                            } else if (pctEl) {
+                                pctEl.remove();
+                            }
                         }
-                        html += '</ul>';
-                    }
-                  } else {
-                      html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
-                      // Show time-window as a satisfied item when the current minute falls inside the method period
-                      try {
-                          if (methodPeriods[method]) {
-                              const rangeMatch = String(methodPeriods[method]).match(/(\d+)'?\D*–\D*(\d+)'?/);
-                              if (rangeMatch) {
-                                  const startMin = parseInt(rangeMatch[1], 10) || 0;
-                                  const endMin = parseInt(rangeMatch[2], 10) || 0;
-                                  if (minAtual >= startMin && minAtual <= endMin) {
-                                      const friendlyText = friendly['janelaTempo'] || 'Dentro da janela necessária';
-                                      html += `<li class="text-emerald-300">${friendlyText}</li>`;
-                                  }
-                              }
-                          }
-                      } catch (e) { /* non-fatal */ }
+                        const apmForaBar = existing.querySelector('.jogo-apm-fora'); if (apmForaBar) {
+                            apmForaBar.style.width = pctForaAPM + '%';
+                            let pctElF = apmForaBar.querySelector('.jogo-apm-fora-pct');
+                            if (pctForaAPM > 18) {
+                                if (!pctElF) {
+                                    pctElF = document.createElement('span');
+                                    pctElF.className = 'jogo-apm-fora-pct text-3xs font-black text-white';
+                                    apmForaBar.appendChild(pctElF);
+                                }
+                                pctElF.textContent = pctForaAPM + '%';
+                            } else if (pctElF) {
+                                pctElF.remove();
+                            }
+                        }
+                        // posse
+                        const posseCasaEl = existing.querySelector('.jogo-posse-casa'); if (posseCasaEl) { posseCasaEl.textContent = `${posseCasa}%`; posseCasaEl.className = `jogo-posse-casa ${posseCasa >= 60 ? 'text-red-400' : 'text-amber-500/90'} font-semibold`; }
+                        const posseForEl = existing.querySelector('.jogo-posse-fora'); if (posseForEl) { posseForEl.textContent = `${posseFora}%`; posseForEl.className = `jogo-posse-fora ${posseFora >= 60 ? 'text-red-400' : 'text-gray-400'} font-semibold text-right`; }
+                        const posseBarCasa = existing.querySelector('.jogo-posse-bar-casa'); if (posseBarCasa) { posseBarCasa.style.width = posseCasa + '%'; posseBarCasa.className = `jogo-posse-bar-casa h-full transition-all duration-500 ${posseCasa >= 60 ? 'bg-red-500' : 'bg-gradient-to-r from-amber-600 to-amber-500'}`; }
+                        const posseBarFora = existing.querySelector('.jogo-posse-bar-fora'); if (posseBarFora) { posseBarFora.style.width = posseFora + '%'; posseBarFora.className = `jogo-posse-bar-fora h-full transition-all duration-500 ${posseFora >= 60 ? 'bg-red-500' : 'bg-gray-600'}`; }
+                        // telemetria counts
+                        const atqPerigCasa = existing.querySelector('.jogo-atq-perig-casa'); if (atqPerigCasa) atqPerigCasa.textContent = jogo.atqPerigososCasa;
+                        const atqPerigFora = existing.querySelector('.jogo-atq-perig-fora'); if (atqPerigFora) atqPerigFora.textContent = jogo.atqPerigososFora;
+                        const chutesCasa = existing.querySelector('.jogo-chutes-casa'); if (chutesCasa) chutesCasa.textContent = `${jogo.chutesNoAlvoCasa}/${jogo.chutesParaForaCasa}`;
+                        const chutesFora = existing.querySelector('.jogo-chutes-fora'); if (chutesFora) chutesFora.textContent = `${jogo.chutesNoAlvoFora}/${jogo.chutesParaForaFora}`;
+                        // update momentum image via crossfade helper (preloads then fades)
+                        try { crossfadeMomentum(jogo.id, `http://${VPS_IP}:3000/screenshot/${jogo.id}?t=${Date.now()}`); } catch(e){}
+                     } catch (err) {
+                          // non-fatal: if any update field failed, skip gracefully (avoid recreating DOM nodes)
+                          console.error('update card fields error', err);
+                      }
+                 }
+                 try {
+                     setTimeout(() => {
+                         const cardEl = gridJogos.querySelector(`.jogo-card[data-jogo-id="${jogo.id}"]`);
+                         if (!cardEl) return;
+                         const walker = document.createTreeWalker(cardEl, NodeFilter.SHOW_TEXT, null, false);
+                         const toRemove = [];
+                         while (walker.nextNode()) {
+                             const txt = walker.currentNode.nodeValue;
+                             if (typeof txt === 'string' && txt.trim() === '-') toRemove.push(walker.currentNode);
+                         }
+                         for (const n of toRemove) n.nodeValue = '';
+                     }, 50);
+                 } catch (e) { /* non-fatal */ }
+             });
+         };
+         eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
 
-                      // If analyzer reported empty missing array, show expected/default criteria for clarity
-                        if (!entry.missing || entry.missing.length === 0) {
-                          const defs = (defaultCriteria[method] || []).slice();
-                          // Ensure the time-window criterion is shown among defaults
-                          if (methodPeriods[method] && !defs.includes('janelaTempo')) defs.unshift('janelaTempo');
-                          if (defs.length === 0) {
-                              html += `<li class="text-amber-300">Nenhum critério registrado — verifique telemetria/odds.</li>`;
-                          } else {
+         // Actualiza as imagens de momentum a cada 30s sem re-renderizar os cards
+         // Use preload swap to avoid flicker when refreshing images
+         setInterval(() => {
+             // refresh using crossfade helper for each momentum container
+             document.querySelectorAll('[id^="momentum-container-"]').forEach(cnt => {
+                 try {
+                     const jogoId = String(cnt.id).replace('momentum-container-', '');
+                     crossfadeMomentum(jogoId, `http://${VPS_IP}:3000/screenshot/${jogoId}?t=${Date.now()}`);
+                 } catch(e){}
+             });
+         }, 30000);
+
+         // --- Modal de Análise de Métodos (Engine) ---
+         function toggleAnalysis(jogoId) {
+             const modal = document.getElementById('modal-analysis');
+             const content = document.getElementById('modal-analysis-content');
+             if (!modal || !content) return;
+             // find jogo in latest payload
+             const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
+             // prefer engineAnalysis, fallback to internal _engineAnalysis if present
+             const analysisSource = (jogo && (jogo.engineAnalysis || jogo._engineAnalysis)) || null;
+             // debug: log raw analysis to browser console for inspection (safe stringify)
+             try {
+                 let dumped = analysisSource;
+                 try { dumped = JSON.stringify(analysisSource, null, 2); } catch (e) { dumped = String(analysisSource); }
+             } catch (_) { /* non-fatal debug */ }
+             // Extract possible telegram message from known locations (logger may attach it)
+             const telegramMsg = (jogo && (jogo.telegramMessage || jogo.lastTelegramMessage || jogo._lastTelegram || jogo.telegram || jogo.lastTelegram)) || (analysisSource && (analysisSource.sentMessage || analysisSource.telegram || analysisSource.telegramMessage)) || null;
+
+             if (!jogo || !analysisSource) {
+                 content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
+                 try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
+             } else {
+                 content.innerHTML = renderEngineAnalysis(jogo, analysisSource, telegramMsg);
+             }
+             // Atualiza o título do modal com nome da partida, tempo atual e placar
+             try {
+                 const titleEl = document.getElementById('modal-analysis-title');
+                 if (titleEl && jogo) {
+                     const nome = jogo.nomePartida || '';
+                     const tempo = jogo.noIntervalo ? 'HT' : (jogo.tempo ? String(jogo.tempo) + "'" : '');
+                     const placar = jogo.placar || '';
+                     titleEl.textContent = `${nome}${tempo ? ' — ' + tempo : ''}${placar ? ' — ' + placar : ''}`;
+                 }
+             } catch (e) { /* non-fatal */ }
+             modal.classList.add('open');
+             // reset draggable position when opening (centered)
+             const box = document.getElementById('modal-analysis-box');
+             const modalEl = document.getElementById('modal-analysis');
+             if (box && modalEl) {
+                 // clear inline left/top to allow centering via modal flexbox
+                 box.style.left = '';
+                 box.style.top = '';
+                 box.style.transform = '';
+                 modalEl.style.alignItems = 'center';
+                 modalEl.style.justifyContent = 'center';
+             }
+         }
+         function closeAnalysis() { document.getElementById('modal-analysis').classList.remove('open'); }
+
+         // Make the analysis modal draggable by its title
+         (function(){
+             const modal = document.getElementById('modal-analysis');
+             const box = document.getElementById('modal-analysis-box');
+             const title = document.getElementById('modal-analysis-title');
+             if (!modal || !box || !title) return;
+             title.style.cursor = 'move';
+             let dragging = false; let startX=0, startY=0, origLeft=0, origTop=0;
+
+             const onDown = (e)=>{
+                 e.preventDefault();
+                 dragging = true;
+                 const rect = box.getBoundingClientRect();
+                 origLeft = rect.left;
+                 origTop = rect.top;
+                 startX = (e.touches ? e.touches[0].clientX : e.clientX);
+                 startY = (e.touches ? e.touches[0].clientY : e.clientY);
+                 // switch modal to top-left anchored so we can position absolutely
+                 modal.style.alignItems = 'flex-start';
+                 modal.style.justifyContent = 'flex-start';
+                 box.style.position = 'fixed';
+                 box.style.margin = '0';
+                 box.style.left = origLeft + 'px';
+                 box.style.top = origTop + 'px';
+                 box.style.transform = '';
+             };
+             const onMove = (e)=>{
+                 if(!dragging) return;
+                 const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+                 const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+                 const dx = cx - startX; const dy = cy - startY;
+                 box.style.left = (origLeft + dx) + 'px';
+                 box.style.top = (origTop + dy) + 'px';
+             };
+             const onUp = ()=>{ dragging = false; };
+             title.addEventListener('mousedown', onDown);
+             title.addEventListener('touchstart', onDown,{passive:false});
+             window.addEventListener('mousemove', onMove);
+             window.addEventListener('touchmove', onMove,{passive:false});
+             window.addEventListener('mouseup', onUp);
+             window.addEventListener('touchend', onUp);
+         })();
+
+         function renderEngineAnalysis(jogo, analysis, telegramMsg) {
+             // friendly mapping for criteria codes
+             const friendly = {
+                 emCooldown: 'Em cooldown após golo (aguardar)',
+                 janelaTempo: 'Tempo de Jogo',
+                 'dominancia<2.0': 'Dominancia time (min 2)',
+                 'apmDominante<0.8': 'APM dominante (min 0.8)',
+                 'atqDominante<8': 'Ataques do time dominante (min 8)',
+                 'difGols>1': 'Diferença de golos alta (não elegível)',
+                 'qualDominante>=18%': 'Qualidade do ataque (time dominante) — mín 18%',
+                 'posseConfirma': 'Posse confirmatória (mín 55%)',
+                 'difGols>0': 'Diferença de golos > 0 — equipa em vantagem (não elegível para gatilho)',
+                 'difGolsFora': 'Diferença de golos fora do intervalo permitido',
+                 'ataquesCasa<10': 'Ataques Perigosos(mín 10)',
+                 'ataquesFora<10': 'Ataques Perigosos(min 10)',
+                 'chutesNoAlvoCasa<2': 'Chute no alvo(min 2)',
+                 'chutesNoAlvoFora<2': 'Chute no alvo(min 2)',
+                 aceleracaoNegativa: 'Aceleração negativa (sem crescimento)',
+                 qualidadeBaixa: 'Qualidade do ataque baixa',
+                 sustainedPressure: 'Pressão sustentada (sustained pressure)',
+                 score: 'Score esperado / confidence',
+                 'chutesNoAlvoCasa+escanteios<3': 'Chute no alvo + Escanteios(min 3)',
+                 'chutesNoAlvoFora+escanteios<3': 'Chutes ao alvo + Escanteios(min 3)',
+                 'ch+esc<3': 'Chute no alvo + Escanteios(min 3)',
+                 'ch+esc': 'Chute no alvo + Escanteios',
+                 'qualidadeN/D': 'Qualidade do ataque (N/D)',
+             };
+
+             // Período de tempo (janela) por método — exibido no cabeçalho para clareza
+             const methodPeriods = {
+                 'GATILHO_1T': "Janela: 15'–40'",
+                 'GATILHO_1T_FORA': "Janela: 15'–40'",
+                 'GATILHO_2T': "Janela: 46'–85'",
+                 'GATILHO_2T_FORA': "Janela: 46'–85'",
+                 'LAY_DRAW': "Janela: 25'–80'",
+                 'FAVORITO_VENCE': "Janela: 15'–70'",
+                 'FAVORITO_VIRA': "Janela: 20'–75'"
+             };
+
+             // Default expected criteria per method (used when analyzer reported empty missing array)
+             const defaultCriteria = {
+                 'GATILHO_1T': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                 'GATILHO_1T_FORA': ['janelaTempo', 'difGolsFora', 'ataquesFora<10', 'chutesNoAlvoFora<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                 'GATILHO_2T': ['janelaTempo', 'difGols>0', 'ataquesCasa<12', 'score', 'sustainedPressure', 'ch+esc<3', 'chutesNoAlvoCasa+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                 'GATILHO_2T_FORA': ['janelaTempo', 'ataquesFora<12', 'chutesNoAlvoFora+escanteios<3', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                 'LAY_DRAW': ['janelaTempo', 'empate', 'dominancia<2.0', 'apmDominante<0.8', 'atqDominante<8', 'qualidadeBaixa'],
+                 'FAVORITO_VENCE': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa'],
+                 'FAVORITO_VIRA': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa']
+             };
+
+             let html = '';
+             html += '<div class="space-y-3">';
+             const rawTempo = jogo && jogo.tempo ? String(jogo.tempo) : '';
+             const minAtual = parseInt((rawTempo || '').replace(/[^0-9]/g, ''), 10) || 0;
+             const hideFirstHalf = minAtual > 45; // if in second half hide first-half-only methods
+             const firstHalfMethods = new Set(['GATILHO_1T','GATILHO_1T_FORA']);
+             for (const method in analysis) {
+                 // omit legacy / removed methods that may still appear in stored analysis
+                 if (String(method).toUpperCase() === 'LAY_0X0') continue;
+                 if (hideFirstHalf && firstHalfMethods.has(method)) continue;
+                 const entry = analysis[method] || { met: false, missing: [] };
+                 const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
+                 const periodLabel = methodPeriods[method] ? `<div class="text-2xs text-gray-400">${methodPeriods[method]}</div>` : '';
+                 html += `<div class="flex justify-between items-center mb-1"><div><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${periodLabel}</div>${statusBadge}</div>`;
+                 if (entry.met) {
+                     // show which criteria were expected/satisfied when met (prefer explicit satisfied list)
+                     let satisfied = entry.satisfied && entry.satisfied.length ? entry.satisfied.slice() : (entry.expected ? entry.expected.slice() : []);
+                     // Ensure the time-window criterion appears in the satisfied list for clarity
+                     if (methodPeriods[method] && !satisfied.includes('janelaTempo')) satisfied.push('janelaTempo');
+                     if (satisfied.length === 0) {
+                         html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
+                     } else {
+                         html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+                         for (const crit of satisfied) {
+                             const friendlyText = friendly[crit] || crit;
+                             html += `<li class="text-emerald-300">${friendlyText}</li>`;
+                         }
+                         html += '</ul>';
+                     }
+                   } else {
+                       html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+                       // Show time-window as a satisfied item when the current minute falls inside the method period
+                       try {
+                           if (methodPeriods[method]) {
+                               const rangeMatch = String(methodPeriods[method]).match(/(\d+)'?\D*–\D*(\d+)'?/);
+                               if (rangeMatch) {
+                                   const startMin = parseInt(rangeMatch[1], 10) || 0;
+                                   const endMin = parseInt(rangeMatch[2], 10) || 0;
+                                   if (minAtual >= startMin && minAtual <= endMin) {
+                                       const friendlyText = friendly['janelaTempo'] || 'Dentro da janela necessária';
+                                       html += `<li class="text-emerald-300">${friendlyText}</li>`;
+                                   }
+                               }
+                           }
+                       } catch (e) { /* non-fatal */ }
+
+                       // If analyzer reported empty missing array, show expected/default criteria for clarity
+                         if (!entry.missing || entry.missing.length === 0) {
+                           const defs = (defaultCriteria[method] || []).slice();
+                           // Ensure the time-window criterion is shown among defaults
+                           if (methodPeriods[method] && !defs.includes('janelaTempo')) defs.unshift('janelaTempo');
+                           if (defs.length === 0) {
+                               html += `<li class="text-amber-300">Nenhum critério registrado — verifique telemetria/odds.</li>`;
+                           } else {
                                 for (const crit of defs) {
                                     const friendlyText = friendly[crit] || crit;
                                     html += `<li class="text-amber-300">${friendlyText}</li>`;
                                 }
-                          }
-                      } else {
-                            // make each missing criterion clickable to show Telegram message (if available)
-                            for (const critRaw of entry.missing) {
-                                // entry.missing may contain plain keys or objects with value info
-                                let crit = critRaw;
-                                let value = null;
-                                if (critRaw && typeof critRaw === 'object') {
-                                    crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
-                                    // try common value fields
-                                    value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
-                                } else if (typeof critRaw === 'string') {
-                                    // parse strings produced by engine_analysis (e.g. "chutesNoAlvoCasa<2 (valor: 1)")
-                                    const s = critRaw;
-                                    // try to extract (valor: X)
-                                    const m = s.match(/\(valor:\s*([^\)]+)\)/i);
-                                    if (m) {
-                                        value = m[1];
-                                    } else {
-                                        // try ": X" after a label
-                                        const m2 = s.match(/:\s*([0-9]+(?:\.[0-9]+)?)/);
-                                        if (m2) value = m2[1];
-                                    }
-                                    // derive crit key before any separator like ' - ', ' (' or ':'
-                                    crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
-                                }
-                                // tolerant friendly lookup: try exact key, normalized key (remove spaces), then substring matches
-                                const normCrit = String(crit).replace(/\s+/g, '');
-                                let friendlyText = friendly[crit] || friendly[normCrit] || null;
-                                if (!friendlyText) {
-                                    // try common substrings to match keys like 'apmDominante' -> 'apmDominante<0.8'
-                                    for (const fk of Object.keys(friendly)) {
-                                        try {
-                                            if (String(crit).toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase()) || normCrit.toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase())) { friendlyText = friendly[fk]; break; }
-                                        } catch(_) {}
-                                    }
-                                }
-                                if (!friendlyText) friendlyText = crit;
-                                // format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
-                                let line = friendlyText;
-                                // Special formatting for chutesNoAlvoCasa<2: show required minimum (from criterion) and current value
-                                if (String(crit).startsWith('chutesNoAlvoCasa')) {
-                                    // try to extract numeric minimum from criterion like 'chutesNoAlvoCasa<2' or 'chutesNoAlvoCasa<=2'
-                                    const m = String(crit).match(/<\s*=?\s*(\d+)/);
-                                    const minReq = m ? m[1] : null;
-                                    const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
-                                    if (minReq) {
-                                        line = `Chute no alvo(min ${minReq})(valor: ${atual})`;
-                                    } else {
-                                        line = `${friendlyText} (Atual: ${atual})`;
-                                    }
-                                    } else {
-                                        let suffix = '';
-                                        if (value !== null && value !== undefined && value !== '') {
-                                            const critLower = String(crit).toLowerCase();
-                                            // qualidade percent
-                                            if (crit === 'qualidadeBaixa' || critLower.includes('qualidade')) {
-                                                suffix = ` - Valor atual: ${String(value)}%`;
-                                            } else if (crit === 'janelaTempo') {
-                                                suffix = ` - Valor atual: ${String(value)}`;
-                                            } else if (critLower.startsWith('ratio') || critLower.includes('ratio')) {
-                                                const num = parseFloat(value);
-                                                const v = Number.isFinite(num) ? num.toFixed(2) : value;
-                                                suffix = ` - Valor atual: ${v}`;
-                                            } else if (critLower.startsWith('placar') || critLower.includes('placar')) {
-                                                suffix = ` - Valor atual: ${String(value)}`;
-                                            } else if (critLower.includes('pressao') || critLower.startsWith('pressao')) {
-                                                const numP = parseFloat(value);
-                                                const vp = Number.isFinite(numP) ? numP.toFixed(2) : value;
-                                                suffix = ` - Valor atual: ${vp}`;
-                                            } else if (critLower.includes('dominancia') || critLower.startsWith('dominancia') || critLower.includes('apmdominante')) {
-                                                // APM / dominância: format to 2 decimals
-                                                const numD = parseFloat(value);
-                                                const vd = Number.isFinite(numD) ? numD.toFixed(2) : value;
-                                                suffix = ` - Valor atual: ${vd}`;
-                                            } else if (critLower.includes('atq') || critLower.includes('ataques') || critLower.includes('ataque') || critLower.includes('atqdominante') || critLower.includes('atqdominante')) {
-                                                // attacks: integer display
-                                                const numA = parseInt(value, 10);
-                                                const va = Number.isFinite(numA) ? String(numA) : String(value);
-                                                suffix = ` - Valor atual: ${va}`;
-                                            } else {
-                                                suffix = ` - Valor atual: ${String(value)}`;
-                                            }
-                                        }
-                                        line = friendlyText + suffix;
-                                    }
-                                // If criterion is placar!=..., override friendly text to readable form
-                                if (String(crit).startsWith('placar')) {
-                                    const atual = (value !== null && value !== undefined && value !== '') ? String(value) : 'N/D';
-                                    // try to extract expected score from crit like 'placar!=1-1' or 'placar!= 1-1'
-                                    const expectMatch = String(crit).match(/!=\s*([0-9]+-[0-9]+)/);
-                                    const expected = expectMatch ? expectMatch[1] : (String(crit).match(/([0-9]+-[0-9]+)/) || [null, '1-1'])[1];
-                                    line = `Placar exato ${expected} - Valor atual: ${atual}`;
-                                }
-                                 // if there's a telegram message available, make the line clickable
-                                 if (telegramMsg) {
-                                     html += `<li class="text-red-400"><a href="#" onclick="event.preventDefault(); openTelegramPreview('${escapeHtml(String(telegramMsg))}');" class="underline decoration-dotted">${line}</a></li>`;
-                                 } else {
-                                     html += `<li class="text-red-400">${line}</li>`;
+                           }
+                         } else {
+                             // make each missing criterion clickable to show Telegram message (if available)
+                             for (const critRaw of entry.missing) {
+                                 // entry.missing may contain plain keys or objects with value info
+                                 let crit = critRaw;
+                                 let value = null;
+                                 if (critRaw && typeof critRaw === 'object') {
+                                     crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
+                                     // try common value fields
+                                     value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
+                                 } else if (typeof critRaw === 'string') {
+                                     // parse strings produced by engine_analysis (e.g. "chutesNoAlvoCasa<2 (valor: 1)")
+                                     const s = critRaw;
+                                     // try to extract (valor: X)
+                                     const m = s.match(/\(valor:\s*([^\)]+)\)/i);
+                                     if (m) {
+                                         value = m[1];
+                                     } else {
+                                         // try ": X" after a label
+                                         const m2 = s.match(/:\s*([0-9]+(?:\.[0-9]+)?)/);
+                                         if (m2) value = m2[1];
+                                     }
+                                     // derive crit key before any separator like ' - ', ' (' or ':'
+                                     crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
                                  }
-                            }
+                                 // tolerant friendly lookup: try exact key, normalized key (remove spaces), then substring matches
+                                 const normCrit = String(crit).replace(/\s+/g, '');
+                                 let friendlyText = friendly[crit] || friendly[normCrit] || null;
+                                 if (!friendlyText) {
+                                     // try common substrings to match keys like 'apmDominante' -> 'apmDominante<0.8'
+                                     for (const fk of Object.keys(friendly)) {
+                                         try {
+                                             if (String(crit).toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase()) || normCrit.toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase())) { friendlyText = friendly[fk]; break; }
+                                         } catch(_) {}
+                                     }
+                                 }
+                                 if (!friendlyText) friendlyText = crit;
+                                 // format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
+                                 let line = friendlyText;
+                                 // Special formatting for chutesNoAlvoCasa<2: show required minimum (from criterion) and current value
+                                 if (String(crit).startsWith('chutesNoAlvoCasa')) {
+                                     // try to extract numeric minimum from criterion like 'chutesNoAlvoCasa<2' or 'chutesNoAlvoCasa<=2'
+                                     const m = String(crit).match(/<\s*=?\s*(\d+)/);
+                                     const minReq = m ? m[1] : null;
+                                     const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
+                                     if (minReq) {
+                                         line = `Chute no alvo(min ${minReq})(valor: ${atual})`;
+                                     } else {
+                                         line = `${friendlyText} (Atual: ${atual})`;
+                                     }
+                                     } else {
+                                         let suffix = '';
+                                         if (value !== null && value !== undefined && value !== '') {
+                                             const critLower = String(crit).toLowerCase();
+                                             // qualidade percent
+                                             if (crit === 'qualidadeBaixa' || critLower.includes('qualidade')) {
+                                                 suffix = ` - Valor atual: ${String(value)}%`;
+                                             } else if (crit === 'janelaTempo') {
+                                                 suffix = ` - Valor atual: ${String(value)}`;
+                                             } else if (critLower.startsWith('ratio') || critLower.includes('ratio')) {
+                                                 const num = parseFloat(value);
+                                                 const v = Number.isFinite(num) ? num.toFixed(2) : value;
+                                                 suffix = ` - Valor atual: ${v}`;
+                                             } else if (critLower.startsWith('placar') || critLower.includes('placar')) {
+                                                 suffix = ` - Valor atual: ${String(value)}`;
+                                             } else if (critLower.includes('pressao') || critLower.startsWith('pressao')) {
+                                                 const numP = parseFloat(value);
+                                                 const vp = Number.isFinite(numP) ? numP.toFixed(2) : value;
+                                                 suffix = ` - Valor atual: ${vp}`;
+                                             } else if (critLower.includes('dominancia') || critLower.startsWith('dominancia') || critLower.includes('apmdominante')) {
+                                                 // APM / dominância: format to 2 decimals
+                                                 const numD = parseFloat(value);
+                                                 const vd = Number.isFinite(numD) ? numD.toFixed(2) : value;
+                                                 suffix = ` - Valor atual: ${vd}`;
+                                             } else if (critLower.includes('atq') || critLower.includes('ataques') || critLower.includes('ataque') || critLower.includes('atqdominante') || critLower.includes('atqdominante')) {
+                                                 // attacks: integer display
+                                                 const numA = parseInt(value, 10);
+                                                 const va = Number.isFinite(numA) ? String(numA) : String(value);
+                                                 suffix = ` - Valor atual: ${va}`;
+                                             } else {
+                                                 suffix = ` - Valor atual: ${String(value)}`;
+                                             }
+                                         }
+                                         line = friendlyText + suffix;
+                                     }
+                                 // If criterion is placar!=..., override friendly text to readable form
+                                 if (String(crit).startsWith('placar')) {
+                                     const atual = (value !== null && value !== undefined && value !== '') ? String(value) : 'N/D';
+                                     // try to extract expected score from crit like 'placar!=1-1' or 'placar!= 1-1'
+                                     const expectMatch = String(crit).match(/!=\s*([0-9]+-[0-9]+)/);
+                                     const expected = expectMatch ? expectMatch[1] : (String(crit).match(/([0-9]+-[0-9]+)/) || [null, '1-1'])[1];
+                                     line = `Placar exato ${expected} - Valor atual: ${atual}`;
+                                 }
+                                  // if there's a telegram message available, make the line clickable
+                                  if (telegramMsg) {
+                                      html += `<li class="text-red-400"><a href="#" onclick="event.preventDefault(); openTelegramPreview('${escapeHtml(String(telegramMsg))}');" class="underline decoration-dotted">${line}</a></li>`;
+                                  } else {
+                                      html += `<li class="text-red-400">${line}</li>`;
+                                  }
+                              }
+                          }
+                          html += '</ul>';
                       }
-                      html += '</ul>';
+                      html += '</div>';
                   }
-                html += '</div>';
-            }
-            html += '</div>';
-            // hidden container for telegram preview (injected once per modal)
-            html += `<div id="telegram-preview" style="display:none;margin-top:12px;padding:10px;border-radius:8px;background:#061021;border:1px solid #123;white-space:pre-wrap;font-family:monospace;">` + (telegramMsg ? escapeHtml(String(telegramMsg)) : '') + `</div>`;
-            return html;
-        }
+                  html += '</div>';
+                  // hidden container for telegram preview (injected once per modal)
+                  html += `<div id="telegram-preview" style="display:none;margin-top:12px;padding:10px;border-radius:8px;background:#061021;border:1px solid #123;white-space:pre-wrap;font-family:monospace;">` + (telegramMsg ? escapeHtml(String(telegramMsg)) : '') + `</div>`;
+                  return html;
+              }
 
-        // show signal / jogo data when clicking status badge
-        function showSignalData(jogoId) {
-            const modal = document.getElementById('modal-analysis');
-            const content = document.getElementById('modal-analysis-content');
-            if (!content || !modal) return;
-            const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
-            if (!jogo) {
-                content.innerHTML = '<div class="text-sm text-gray-300">Dados do jogo não disponíveis no payload atual.</div>';
-            } else {
-                // build a compact view: status, tempo, placar, tempo do sinal (if present), engineAnalysis and raw JSON
-                let html = '<div class="space-y-3 text-2xs">';
-                html += `<div><strong>Status:</strong> ${jogo.statusGatilho || 'N/D'}</div>`;
-                html += `<div><strong>Tempo:</strong> ${jogo.tempo || 'N/D'}</div>`;
-                html += `<div><strong>Placar atual:</strong> ${jogo.placar || 'N/D'}</div>`;
-                html += `<div><strong>Pressão (APM):</strong> ${jogo.pressao != null ? jogo.pressao.toFixed(2) : 'N/D'}</div>`;
-                if (jogo.lastSignal) {
-                    html += '<div><strong>Última mensagem enviada (Telegram / sinal):</strong></div>';
-                    const sig = jogo.lastSignal;
-                    const ts = sig.ts ? new Date(sig.ts).toLocaleString() : 'N/D';
-                    try { html += `<div style="background:#07131b;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd"><div><strong>Signal ID:</strong> ${sig.id || 'N/D'}</div><div><strong>TS:</strong> ${ts}</div><div style="margin-top:6px;white-space:pre-wrap">${sig.mensagem || 'N/D'}</div></div>`; } catch(e){ html += '<div>Erro ao serializar lastSignal</div>'; }
-                    // also provide quick link hint to historico (CSV) - user can search by signal id
-                    html += `<div class="text-3xs text-gray-400 mt-1">Procure por <code>${sig.id}</code> em <em>historico_gatilhos.csv</em> para ver registro completo.</div>`;
-                } else {
-                    if (jogo.engineAnalysis || jogo._engineAnalysis) {
-                        html += '<div><strong>Análise do motor:</strong></div>';
-                        try { html += `<pre style="white-space:pre-wrap;background:#061021;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd">${JSON.stringify(jogo.engineAnalysis || jogo._engineAnalysis, null, 2)}</pre>`; } catch(e){ html += '<div>Erro ao serializar engineAnalysis</div>'; }
-                    }
-                    html += '<div><strong>Payload bruto:</strong></div>';
-                    try { html += `<pre style="white-space:pre-wrap;background:#061021;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd">${JSON.stringify(jogo, null, 2)}</pre>`; } catch(e) { html += '<div>Erro ao serializar payload</div>'; }
-                }
-                html += '</div>';
-                content.innerHTML = html;
-            }
-            // set title
-            try { const titleEl = document.getElementById('modal-analysis-title'); if (titleEl) titleEl.textContent = `Dados do Sinal — ${jogo ? (jogo.nomePartida || '') : ''}`; } catch(e){}
-            modal.classList.add('open');
-        }
+              // show signal / jogo data when clicking status badge
+              function showSignalData(jogoId) {
+                  const modal = document.getElementById('modal-analysis');
+                  const content = document.getElementById('modal-analysis-content');
+                  if (!content || !modal) return;
+                  const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
+                  if (!jogo) {
+                      content.innerHTML = '<div class="text-sm text-gray-300">Dados do jogo não disponíveis no payload atual.</div>';
+                  } else {
+                      // build a compact view: status, tempo, placar, tempo do sinal (if present), engineAnalysis and raw JSON
+                      let html = '<div class="space-y-3 text-2xs">';
+                      html += `<div><strong>Status:</strong> ${jogo.statusGatilho || 'N/D'}</div>`;
+                      html += `<div><strong>Tempo:</strong> ${jogo.tempo || 'N/D'}</div>`;
+                      html += `<div><strong>Placar atual:</strong> ${jogo.placar || 'N/D'}</div>`;
+                      html += `<div><strong>Pressão (APM):</strong> ${jogo.pressao != null ? jogo.pressao.toFixed(2) : 'N/D'}</div>`;
+                      if (jogo.lastSignal) {
+                          html += '<div><strong>Última mensagem enviada (Telegram / sinal):</strong></div>';
+                          const sig = jogo.lastSignal;
+                          const ts = sig.ts ? new Date(sig.ts).toLocaleString() : 'N/D';
+                          try { html += `<div style="background:#07131b;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd"><div><strong>Signal ID:</strong> ${sig.id || 'N/D'}</div><div><strong>TS:</strong> ${ts}</div><div style="margin-top:6px;white-space:pre-wrap">${sig.mensagem || 'N/D'}</div></div>`; } catch(e){ html += '<div>Erro ao serializar lastSignal</div>'; }
+                          // also provide quick link hint to historico (CSV) - user can search by signal id
+                          html += `<div class="text-3xs text-gray-400 mt-1">Procure por <code>${sig.id}</code> em <em>historico_gatilhos.csv</em> para ver registro completo.</div>`;
+                      } else {
+                          if (jogo.engineAnalysis || jogo._engineAnalysis) {
+                              html += '<div><strong>Análise do motor:</strong></div>';
+                              try { html += `<pre style="white-space:pre-wrap;background:#061021;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd">${JSON.stringify(jogo.engineAnalysis || jogo._engineAnalysis, null, 2)}</pre>`; } catch(e){ html += '<div>Erro ao serializar engineAnalysis</div>'; }
+                          }
+                          html += '<div><strong>Payload bruto:</strong></div>';
+                          try { html += `<pre style="white-space:pre-wrap;background:#061021;padding:8px;border-radius:6px;border:1px solid #123;color:#bcd">${JSON.stringify(jogo, null, 2)}</pre>`; } catch(e) { html += '<div>Erro ao serializar payload</div>'; }
+                      }
+                      html += '</div>';
+                      content.innerHTML = html;
+                  }
+                  // set title
+                  try { const titleEl = document.getElementById('modal-analysis-title'); if (titleEl) titleEl.textContent = `Dados do Sinal — ${jogo ? (jogo.nomePartida || '') : ''}`; } catch(e){}
+                  modal.classList.add('open');
+              }
 
-        // helper to open telegram preview inside the modal
-        function openTelegramPreview(msg) {
-            const el = document.getElementById('telegram-preview');
-            if (!el) return;
-            el.style.display = 'block';
-            el.textContent = msg || 'Nenhuma mensagem disponível.';
-            // scroll into view inside modal
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+              // helper to open telegram preview inside the modal
+              function openTelegramPreview(msg) {
+                  const el = document.getElementById('telegram-preview');
+                  if (!el) return;
+                  el.style.display = 'block';
+                  el.textContent = msg || 'Nenhuma mensagem disponível.';
+                  // scroll into view inside modal
+                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
 
-        // small helper to safely escape quotes for embedding in onclick (basic)
-        function escapeHtml(str) {
-            return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-        }
-    </script>
+              // small helper to safely escape quotes for embedding in onclick (basic)
+              function escapeHtml(str) {
+                  return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+              }
+          }
+      </script>
 
 
-    <script>
-        // Função resiliente para injetar badge de análise nos cards já renderizados
-        function updateAnalysisBadges(listaJogos) {
-            try {
-                listaJogos = listaJogos || window._latestJogos || [];
-                listaJogos.forEach(j => {
-                    const id = String(j.id || j.matchId || j.gameId || '');
-                    if (!id) return;
-                    // tenta múltiplos seletores comuns de cards
-                    const selectors = [
-                        `.jogo-card[data-id="${id}"]`,
-                        `#card-${id}`,
-                        `[data-jogo-id="${id}"]`,
-                        `div[data-id="${id}"]`,
-                    ];
-                    let el = null;
-                    for (const s of selectors) {
-                        el = document.querySelector(s);
-                        if (el) break;
-                    }
-                    if (!el) return;
-                    // procura cabeçalho para colocar badge; se não existir usa el
-                    const header = el.querySelector('.card-header') || el.querySelector('.header') || el;
-                    // verifica se já temos badge
-                    if (header.querySelector('.engine-badge')) return;
-                    if (j.engineAnalysis && Object.keys(j.engineAnalysis).length > 0) {
-                        const span = document.createElement('span');
-                        span.className = 'engine-badge';
-                        span.title = 'Análise do motor disponível — clique para ver detalhes';
-                        span.textContent = '🔬 Análise disponível';
-                        // estilo inline para compatibilidade rápida
-                        span.style.cssText = 'display:inline-block;margin-left:8px;padding:4px 8px;background:#0f1724;color:#b7f5d0;border-radius:12px;font-size:12px;font-weight:600;cursor:pointer;';
-                        span.addEventListener('click', function (ev) {
-                            ev.stopPropagation();
-                            // tenta extrair id e abrir modal existente
-                            const jogoId = id;
-                            if (typeof toggleAnalysis === 'function') toggleAnalysis(jogoId);
-                        });
-                        header.appendChild(span);
-                    }
-                });
-            } catch (e) { console.error('updateAnalysisBadges error', e); }
-        }
+      <script>
+          // Função resiliente para injetar badge de análise nos cards já renderizados
+          function updateAnalysisBadges(listaJogos) {
+              try {
+                  listaJogos = listaJogos || window._latestJogos || [];
+                  listaJogos.forEach(j => {
+                      const id = String(j.id || j.matchId || j.gameId || '');
+                      if (!id) return;
+                      // tenta múltiplos seletores comuns de cards
+                      const selectors = [
+                          `.jogo-card[data-id="${id}"]`,
+                          `#card-${id}`,
+                          `[data-jogo-id="${id}"]`,
+                          `div[data-id="${id}"]`,
+                      ];
+                      let el = null;
+                      for (const s of selectors) {
+                          el = document.querySelector(s);
+                          if (el) break;
+                      }
+                      if (!el) return;
+                      // procura cabeçalho para colocar badge; se não existir usa el
+                      const header = el.querySelector('.card-header') || el.querySelector('.header') || el;
+                      // verifica se já temos badge
+                      if (header.querySelector('.engine-badge')) return;
+                      if (j.engineAnalysis && Object.keys(j.engineAnalysis).length > 0) {
+                          const span = document.createElement('span');
+                          span.className = 'engine-badge';
+                          span.title = 'Análise do motor disponível — clique para ver detalhes';
+                          span.textContent = '🔬 Análise disponível';
+                          // estilo inline para compatibilidade rápida
+                          span.style.cssText = 'display:inline-block;margin-left:8px;padding:4px 8px;background:#0f1724;color:#b7f5d0;border-radius:12px;font-size:12px;font-weight:600;cursor:pointer;';
+                          span.addEventListener('click', function (ev) {
+                              ev.stopPropagation();
+                              // tenta extrair id e abrir modal existente
+                              const jogoId = id;
+                              if (typeof toggleAnalysis === 'function') toggleAnalysis(jogoId);
+                          });
+                          header.appendChild(span);
+                      }
+                  });
+              } catch (e) { console.error('updateAnalysisBadges error', e); }
+          }
 
-        // Hook para ser chamado sempre que SSE atualiza _latestJogos
-        (function () {
-            const origHandle = window.__sseHandleLatestJogos;
-            // se o código já definiu um hook, tenta preservar
-            window.__sseHandleLatestJogos = function (listaJogos) {
-                try { updateAnalysisBadges(listaJogos); } catch (e) {}
-                if (typeof origHandle === 'function') origHandle(listaJogos);
-            };
-            // também tenta atualizar imediatamente se já houver jogos
-            setTimeout(() => updateAnalysisBadges(window._latestJogos || []), 500);
-        })();
-    </script>
+          // Hook para ser chamado sempre que SSE atualiza _latestJogos
+          (function () {
+              const origHandle = window.__sseHandleLatestJogos;
+              // se o código já definiu um hook, tenta preservar
+              window.__sseHandleLatestJogos = function (listaJogos) {
+                  try { updateAnalysisBadges(listaJogos); } catch (e) {}
+                  if (typeof origHandle === 'function') origHandle(listaJogos);
+              };
+              // também tenta atualizar imediatamente se já houver jogos
+              setTimeout(() => updateAnalysisBadges(window._latestJogos || []), 500);
+          })();
+      </script>
 
-    <style>
-        .engine-badge { transition: transform .12s ease; }
-        .engine-badge:hover { transform: translateY(-2px); }
-    </style>
-</body>
-</html>
+      <style>
+          .engine-badge { transition: transform .12s ease; }
+          .engine-badge:hover { transform: translateY(-2px); }
+      </style>
+  </body>
+  </html>
