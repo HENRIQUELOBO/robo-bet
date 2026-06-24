@@ -67,7 +67,10 @@ async function iniciarRobo() {
         '--single-process',
         '--no-zygote',
         '--disable-accelerated-2d-canvas',
-        '--disable-features=VizDisplayCompositor'
+        '--disable-features=VizDisplayCompositor',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-backgrounding-occluded-windows'
     ];
     const execPath = process.env.CHROME_PATH || undefined;
     const browser = await puppeteer.launch({
@@ -85,6 +88,44 @@ async function iniciarRobo() {
         if (poolDeJogos.has(idJogo_unico)) return {ok: false, erro: 'Jogo já iniciado'};
         try {
             const novaAba = await browser.newPage();
+            // Desativar throttling via injeção e bloquear scripts/requests de terceiros
+            try {
+                // Forçar páginas em background a se comportarem como visíveis
+                await novaAba.evaluateOnNewDocument(() => {
+                    try {
+                        Object.defineProperty(document, 'hidden', {get: () => false});
+                        Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+                        // disparar eventos de visibilidade caso algum listener dependa disso
+                        document.dispatchEvent(new Event('visibilitychange'));
+                    } catch (e) {}
+                    // reduzir timers agressivos (substituir setInterval / setTimeout não recomendado globalmente)
+                });
+
+                await novaAba.setRequestInterception(true);
+                const thirdPartyPattern = /goog(le|analytics)|doubleclick|analytics|tracker|track|ads|adservice|cdn-cgi|facebook|pixel|hotjar|mixpanel|segment|amplitude/i;
+                const allowedHostnames = [];
+                novaAba.on('request', req => {
+                    const pt = req.resourceType();
+                    const url = req.url();
+                    try {
+                        const u = new URL(url);
+                        const hostname = u.hostname || '';
+
+                        // Bloquear recursos pesados e scripts de terceiros conhecidos
+                        if (pt === 'image' || pt === 'stylesheet' || pt === 'font') return req.abort();
+                        if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) return req.abort();
+                        // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
+                        if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) return req.abort();
+
+                        // permitir o resto
+                        return req.continue();
+                    } catch (e) {
+                        return req.continue();
+                    }
+                });
+            } catch (e) {
+                // alguns ambientes podem não suportar intercept/evaluateOnNewDocument
+            }
             await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
             await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded'});
 
@@ -308,7 +349,7 @@ async function iniciarRobo() {
                         }
 
                         try {
-                            const bodyText = (document.body && document.body.innerText) ? document.body.innerText.toLowerCase() : '';
+                            const bodyText = (document.body && document.body.innerText) ? document.body.innerText.slice(0, 20000).toLowerCase() : '';
                             if (!statusEncerrado) {
                                 if (/\bfinal\s*(da|de)?\s*partida\b/.test(bodyText) || /\bfim\s*(da|do|de)?\s*jogo\b/.test(bodyText) || bodyText.includes('resultado final') || bodyText.includes('apito final')) {
                                     statusEncerrado = true;
@@ -560,7 +601,7 @@ async function iniciarRobo() {
 
             process.stderr.write(`[MAIN_LOOP] ❌ Erro no loop principal: ${e && e.message ? e.message : e}\n`);
         }
-    }, 5000);
+    }, 10000);
 
     function abrirPromptNovaAba() {
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
@@ -579,6 +620,44 @@ async function iniciarRobo() {
             if (poolDeJogos.has(idJogo_unico)) return {ok: false, erro: 'Jogo já iniciado'};
             try {
                 const novaAba = await browser.newPage();
+                // Desativar throttling via injeção e bloquear scripts/requests de terceiros
+                try {
+                    // Forçar páginas em background a se comportarem como visíveis
+                    await novaAba.evaluateOnNewDocument(() => {
+                        try {
+                            Object.defineProperty(document, 'hidden', {get: () => false});
+                            Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
+                            // disparar eventos de visibilidade caso algum listener dependa disso
+                            document.dispatchEvent(new Event('visibilitychange'));
+                        } catch (e) {}
+                        // reduzir timers agressivos (substituir setInterval / setTimeout não recomendado globalmente)
+                    });
+
+                    await novaAba.setRequestInterception(true);
+                    const thirdPartyPattern = /goog(le|analytics)|doubleclick|analytics|tracker|track|ads|adservice|cdn-cgi|facebook|pixel|hotjar|mixpanel|segment|amplitude/i;
+                    const allowedHostnames = [];
+                    novaAba.on('request', req => {
+                        const pt = req.resourceType();
+                        const url = req.url();
+                        try {
+                            const u = new URL(url);
+                            const hostname = u.hostname || '';
+
+                            // Bloquear recursos pesados e scripts de terceiros conhecidos
+                            if (pt === 'image' || pt === 'stylesheet' || pt === 'font') return req.abort();
+                            if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) return req.abort();
+                            // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
+                            if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) return req.abort();
+
+                            // permitir o resto
+                            return req.continue();
+                        } catch (e) {
+                            return req.continue();
+                        }
+                    });
+                } catch (e) {
+                    // alguns ambientes podem não suportar intercept/evaluateOnNewDocument
+                }
                 await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
                 await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded'});
 
@@ -722,4 +801,6 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
+
+
 
