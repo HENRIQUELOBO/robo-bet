@@ -94,9 +94,15 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
             }
         }
 
+        let jogoUrl = null;
+        try {
+            jogoUrl = jogo.url || (jogo.pageContext && typeof jogo.pageContext.url === 'function' ? jogo.pageContext.url() : null) || null;
+        } catch (e) { jogoUrl = jogo.url || null; }
+
         listaJogos.push({
             id,
             nomePartida: jogo.nomePartida,
+            url: jogoUrl,
             tempo: jogo.tempo,
             placar: jogo.placar,
             noIntervalo: jogo.noIntervalo,

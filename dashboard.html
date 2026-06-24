@@ -40,6 +40,7 @@
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
       <input id="filtro" placeholder="filtro por partida/tipo" style="padding:6px;border-radius:6px;border:1px solid #123;background:#04101a;color:#e6eef8" />
       <button id="btn-order" class="btn" title="Ordenar por acerto">Acerto ↑</button>
+      <button id="btn-order-games" class="btn" title="Ordenar jogos" style="">Jogos ↓</button>
       <button id="btn-apply" class="btn" style="background:#0b3b5a;color:#fff">Aplicar confirmações</button>
     </div>
   </div>
@@ -51,6 +52,7 @@
 
 <script>
 let totalsOrderAsc = true;
+let gamesOrderDesc = true; // true = newest/descending by id
 async function carregar(){
   const r = await fetch('/api/historico');
   const j = await r.json();
@@ -85,8 +87,8 @@ async function carregar(){
     if(!filtro) return true;
     return (row.partida||'').toLowerCase().includes(filtro) || (row.tipo||'').toLowerCase().includes(filtro);
   });
-  // order rows descending (newest / highest id first)
-  rows.sort((a,b)=> (b.id||0) - (a.id||0));
+  // order rows by id according to gamesOrderDesc
+  rows.sort((a,b)=> gamesOrderDesc ? ((b.id||0) - (a.id||0)) : ((a.id||0) - (b.id||0)));
   // load pending confirmations
   let confirmacoes = {};
   try { const rc = await fetch('/api/confirmacoes'); const jc = await rc.json(); if (jc.ok) confirmacoes = jc.confirmacoes || {}; } catch(e) { confirmacoes = {}; }
@@ -191,6 +193,14 @@ document.getElementById('btn-order').addEventListener('click', ()=>{
   totalsOrderAsc = !totalsOrderAsc;
   const b = document.getElementById('btn-order');
   b.textContent = totalsOrderAsc ? 'Acerto ↑' : 'Acerto ↓';
+  carregar();
+});
+
+// toggle ordering of games list
+document.getElementById('btn-order-games').addEventListener('click', ()=>{
+  gamesOrderDesc = !gamesOrderDesc;
+  const b = document.getElementById('btn-order-games');
+  b.textContent = gamesOrderDesc ? 'Jogos ↓' : 'Jogos ↑';
   carregar();
 });
 

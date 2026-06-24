@@ -32,6 +32,7 @@
 		<a href="dashboard" class="text-sm font-medium px-3 py-1 rounded hover:bg-gray-800/60 text-gray-300">Dashboard</a>
 		<a href="report.html" class="text-sm font-medium px-3 py-1 rounded hover:bg-gray-800/60 text-gray-300">Relatório de bot</a>
 		<a href="#" onclick="window.location.reload();return false;" class="ml-auto text-sm px-3 py-1 rounded bg-gray-800/50 hover:bg-gray-800 text-gray-300">⟳ Atualizar</a>
+		<button id="btn-order-time" onclick="toggleOrderTime();" class="text-sm px-3 py-1 rounded bg-gray-800/50 hover:bg-gray-800 text-gray-300">Tempo ↓</button>
 	</nav>
 	<div class="flex items-center gap-3">
 		<input
@@ -69,6 +70,14 @@
 			<div id="modal-analysis-content" style="max-height:60vh; overflow:auto;"></div>
 		</div>
 	</div>
+
+	<div id="modal-embed" style="display:none;position:fixed;inset:0;z-index:11000;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);">
+		<div style="width:95%;max-width:1100px;height:88vh;background:#07121a;border-radius:10px;overflow:hidden;position:relative;border:1px solid #21303a;">
+			<button onclick="closeEmbedModal()" style="position:absolute;right:10px;top:8px;z-index:12;background:#0b1220;border:1px solid #374151;color:#9ca3af;border-radius:6px;padding:6px 8px;">× Fechar</button>
+			<iframe id="embed-iframe" src="" frameborder="0" style="width:100%;height:100%;background:white;" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>
+		</div>
+	</div>
+
 	<div id="grid-jogos" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
 		<div class="col-span-full text-center py-20 text-gray-500 font-mono border border-dashed border-gray-800 rounded-xl bg-gray-900/10">🔍 Conectando à esteira de dados assíncronos da VPS...</div>
 	</div>
@@ -80,6 +89,7 @@
 	const API_BASE = (window.__CONFIG__ && window.__CONFIG__.API_BASE) || (location.protocol + '//' + location.host);
 	const VPS_IP = (window.__CONFIG__ && window.__CONFIG__.VPS_IP) || window.location.hostname;
 	let _latestJogos = [];
+	let jogosOrderByTimeDesc = true; // true = descending by tempo (highest minute first)
 	// Use same-origin relative path when possible so EventSource follows the website origin (works with reverse proxy)
 	const eventSource = new EventSource(new URL('/events', API_BASE).toString());
 	const gridJogos = document.getElementById('grid-jogos');
@@ -144,6 +154,11 @@
 
 	eventSource.onmessage = function(event) {
 		const jogos = JSON.parse(event.data);
+		// Debug: report which jogos include analysis at arrival
+		try {
+			const analysisReport = (jogos || []).map(j => ({ id: j.id, hasEngineAnalysis: !!j.engineAnalysis, has_engine_keys: Object.keys(j || {}).filter(k=>/engine|analysis/i.test(k)) }));
+			console.debug('[SSE] incoming jogos analysis report:', analysisReport);
+		} catch(e) { console.debug('[SSE] analysis report error', e); }
 		_latestJogos = jogos;
 		if (jogos.length === 0) {
 			gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-gray-500 border border-dashed border-gray-800 rounded-xl bg-gray-900/30 font-mono">🛰️ Sem partidas ativas no Pool. Cole uma URL acima para começar a monitorar.</div>`;
@@ -151,6 +166,16 @@
 		}
 		gridJogos.innerHTML = '';
 
+		// sort by tempo (minute) if requested before rendering
+		try{
+			if (Array.isArray(jogos)) {
+				jogos.sort((a,b)=>{
+					const ta = parseInt(String(a.tempo||'').replace(/[^0-9]/g,''),10) || 0;
+					const tb = parseInt(String(b.tempo||'').replace(/[^0-9]/g,''),10) || 0;
+					return jogosOrderByTimeDesc ? (tb - ta) : (ta - tb);
+				});
+			}
+		}catch(e){/* non-fatal */}
 		jogos.forEach(jogo => {
 			// sanitize incoming jogo object: remove literal '-' placeholders
 			function sanitizeJogo(obj) {
@@ -200,11 +225,8 @@
 			}
 
 			// Indicador visual se a engine forneceu análise (mesmo que vazia)
-			let analysisIndicator = '';
-			if (jogo.engineAnalysis || jogo._engineAnalysis) {
-				// make the analysis badge clickable to open the modal for this jogo
-				analysisIndicator = `<span class="ml-2 text-2xs px-2 py-0.5 rounded bg-emerald-500 text-black font-bold cursor-pointer" onclick="event.stopPropagation(); toggleAnalysis('${jogo.id}')">🔬 Análise</span>`;
-			}
+			// always render analysis button on the card; toggleAnalysis will show modal or indicate no analysis
+			let analysisIndicator = `<span class="ml-2 text-2xs px-2 py-0.5 rounded bg-emerald-500 text-black font-bold cursor-pointer" onclick="event.stopPropagation(); toggleAnalysis('${jogo.id}')">🔬 Análise</span>`;
 
 			const cardHtml = `
                     <div class="border rounded-2xl p-5 flex flex-col justify-between transition-all duration-300 ${cardBorda} jogo-card" data-jogo-id="${jogo.id}">
@@ -213,7 +235,10 @@
                             <div class="flex items-center">
                                 <span class="text-2xs uppercase px-3 py-1 rounded-full font-mono font-bold tracking-widest ${statusBadge} cursor-pointer" onclick="event.stopPropagation(); showSignalData('${jogo.id}')">${jogo.statusGatilho}</span>
                                 ${analysisIndicator}
-                            </div>
+								<!-- Botão rápido para abrir o link da partida (usa explicitamente jogo.url; se ausente o botão fica desabilitado) -->
+								<!-- Sempre renderiza botão ativo; openGameLink validará a URL e mostrará alerta se ausente -->
+								<button class="ml-2 text-2xs px-2 py-0.5 rounded bg-gray-800 hover:bg-gray-700 border border-gray-700 text-amber-300 font-bold" onclick="event.stopPropagation(); openGameLink('${escapeHtml(jogo.url || '')}')">🔗 Link</button>
+                             </div>
                         </div>
 
                         <div class="text-center my-1">
@@ -304,8 +329,22 @@
 				}, 50);
 			} catch (e) { /* non-fatal */ }
 		});
+
+		// ensure analysis badges are injected after rendering (fix: badge sometimes missing)
+		try{ if (typeof updateAnalysisBadges === 'function') updateAnalysisBadges(jogos); }catch(e){}
 	};
 	eventSource.onerror = function() { gridJogos.innerHTML = `<div class="col-span-full text-center py-20 text-red-500 font-mono border border-red-900/40 bg-red-950/10 rounded-xl">⚠️ LINK DE DADOS INDISPONÍVEL.</div>`; };
+
+	// toggle ordering by tempo button handler
+	function toggleOrderTime(){
+		jogosOrderByTimeDesc = !jogosOrderByTimeDesc;
+		const btn = document.getElementById('btn-order-time');
+		if (btn) btn.textContent = jogosOrderByTimeDesc ? 'Tempo ↓' : 'Tempo ↑';
+		// re-render current payload using updated order
+		if (Array.isArray(_latestJogos) && _latestJogos.length>0) {
+			eventSource.onmessage({ data: JSON.stringify(_latestJogos) });
+		}
+	}
 
 	// Actualiza as imagens de momentum a cada 30s sem re-renderizar os cards
 	setInterval(() => {
@@ -323,7 +362,9 @@
 		// find jogo in latest payload
 		const jogo = _latestJogos.find(j => String(j.id) === String(jogoId));
 		// prefer engineAnalysis, fallback to internal _engineAnalysis if present
-		const analysisSource = (jogo && (jogo.engineAnalysis || jogo._engineAnalysis)) || null;
+		const analysisSource = (jogo && (jogo.engineAnalysis || jogo._engineAnalysis || jogo.analysis || jogo._analysis)) || null;
+		// Debug logging to help diagnose missing analysis
+		try { console.debug('[toggleAnalysis] jogoId=', jogoId, 'found?', !!jogo, 'has engineAnalysis?', !!(jogo && jogo.engineAnalysis), 'has _engineAnalysis?', !!(jogo && jogo._engineAnalysis), 'other analysis keys?', !!(jogo && (jogo.analysis || jogo._analysis))); } catch (e) {}
 		// debug: log raw analysis to browser console for inspection (safe stringify)
 		try {
 			let dumped = analysisSource;
@@ -332,8 +373,50 @@
 		// Extract possible telegram message from known locations (logger may attach it)
 		const telegramMsg = (jogo && (jogo.telegramMessage || jogo.lastTelegramMessage || jogo._lastTelegram || jogo.telegram || jogo.lastTelegram)) || (analysisSource && (analysisSource.sentMessage || analysisSource.telegram || analysisSource.telegramMessage)) || null;
 
-		if (!jogo || !analysisSource) {
-			content.innerHTML = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
+		// If analysis is missing, try a tolerant recursive search for any analysis-like object
+		function looksLikeAnalysis(o) {
+			if (!o || typeof o !== 'object') return false;
+			// common engine analysis fields: met (bool) and missing (array) or satisfied
+			if (typeof o.met === 'boolean' && (Array.isArray(o.missing) || Array.isArray(o.satisfied) || Array.isArray(o.expected))) return true;
+			return false;
+		}
+		function findAnalysisIn(obj, seen = new WeakSet()) {
+			if (!obj || typeof obj !== 'object' || seen.has(obj)) return null;
+			seen.add(obj);
+			if (looksLikeAnalysis(obj)) return obj;
+			for (const k of Object.keys(obj)) {
+				try {
+					const v = obj[k];
+					if (looksLikeAnalysis(v)) return v;
+					if (v && typeof v === 'object') {
+						const found = findAnalysisIn(v, seen);
+						if (found) return found;
+					}
+				} catch (e) { /* ignore traversal errors */ }
+			}
+			return null;
+		}
+		let tolerantAnalysis = analysisSource;
+		if (!tolerantAnalysis && jogo) tolerantAnalysis = findAnalysisIn(jogo) || null;
+
+		// Treat empty objects ("{}") as missing analysis so user sees debug payload
+		const analysisIsEmptyObject = tolerantAnalysis && typeof tolerantAnalysis === 'object' && !Array.isArray(tolerantAnalysis) && Object.keys(tolerantAnalysis).length === 0;
+
+		if (!jogo || !tolerantAnalysis || analysisIsEmptyObject) {
+			// Provide richer debug view so user can inspect why analysis is missing
+			let debugHtml = `<div class="text-sm text-gray-300">Nenhuma análise disponível para este jogo.</div>`;
+			if (jogo) {
+				try {
+					debugHtml += `<div style="margin-top:8px;padding:8px;border-radius:8px;background:#07121a;border:1px solid #122;color:#bcd;font-family:monospace;max-height:40vh;overflow:auto;"><strong>Payload (debug):</strong><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(jogo, null, 2))}</pre></div>`;
+				} catch (e) { /* ignore */ }
+			}
+			// if we found a tolerantAnalysis deeper in the object, show it too for clarity
+			if (tolerantAnalysis) {
+				try {
+					debugHtml += `<div style="margin-top:8px;padding:8px;border-radius:8px;background:#07121a;border:1px solid #122;color:#bcd;font-family:monospace;max-height:30vh;overflow:auto;"><strong>Encontrada análise (heurística):</strong><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(tolerantAnalysis, null, 2))}</pre></div>`;
+				} catch(e) {}
+			}
+			content.innerHTML = debugHtml;
 			try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
 		} else {
 			content.innerHTML = renderEngineAnalysis(jogo, analysisSource, telegramMsg);
@@ -469,155 +552,115 @@
 			const entry = analysis[method] || { met: false, missing: [] };
 			const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
 			const periodLabel = methodPeriods[method] ? `<div class="text-2xs text-gray-400">${methodPeriods[method]}</div>` : '';
-			html += `<div class="flex justify-between items-center mb-1"><div><div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>${periodLabel}</div>${statusBadge}</div>`;
-			if (entry.met) {
-				// show which criteria were expected/satisfied when met (prefer explicit satisfied list)
-				let satisfied = entry.satisfied && entry.satisfied.length ? entry.satisfied.slice() : (entry.expected ? entry.expected.slice() : []);
-				// Ensure the time-window criterion appears in the satisfied list for clarity
-				if (methodPeriods[method] && !satisfied.includes('janelaTempo')) satisfied.push('janelaTempo');
-				if (satisfied.length === 0) {
-					html += `<div class="text-2xs text-emerald-300">Todos os critérios foram satisfeitos.</div>`;
-				} else {
-					html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
-					for (const crit of satisfied) {
-						const friendlyText = friendly[crit] || crit;
-						html += `<li class="text-emerald-300">${friendlyText}</li>`;
-					}
-					html += '</ul>';
-				}
-			} else {
-				html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
-				// Show time-window as a satisfied item when the current minute falls inside the method period
-				try {
-					if (methodPeriods[method]) {
-						const rangeMatch = String(methodPeriods[method]).match(/(\d+)'?\D*–\D*(\d+)'?/);
-						if (rangeMatch) {
-							const startMin = parseInt(rangeMatch[1], 10) || 0;
-							const endMin = parseInt(rangeMatch[2], 10) || 0;
-							if (minAtual >= startMin && minAtual <= endMin) {
-								const friendlyText = friendly['janelaTempo'] || 'Dentro da janela necessária';
-								html += `<li class="text-emerald-300">${friendlyText}</li>`;
-							}
-						}
-					}
-				} catch (e) { /* non-fatal */ }
-
-				// If analyzer reported empty missing array, show expected/default criteria for clarity
-				if (!entry.missing || entry.missing.length === 0) {
-					const defs = (defaultCriteria[method] || []).slice();
-					// Ensure the time-window criterion is shown among defaults
-					if (methodPeriods[method] && !defs.includes('janelaTempo')) defs.unshift('janelaTempo');
-					if (defs.length === 0) {
-						html += `<li class="text-amber-300">Nenhum critério registrado — verifique telemetria/odds.</li>`;
-					} else {
-						for (const crit of defs) {
-							const friendlyText = friendly[crit] || crit;
-							html += `<li class="text-amber-300">${friendlyText}</li>`;
-						}
-					}
-				} else {
-					// make each missing criterion clickable to show Telegram message (if available)
-					for (const critRaw of entry.missing) {
-						// entry.missing may contain plain keys or objects with value info
-						let crit = critRaw;
-						let value = null;
-						if (critRaw && typeof critRaw === 'object') {
-							crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
-							// try common value fields
-							value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
-						} else if (typeof critRaw === 'string') {
-							// parse strings produced by engine_analysis (e.g. "chutesNoAlvoCasa<2 (valor: 1)")
-							const s = critRaw;
-							// try to extract (valor: X)
-							const m = s.match(/\(valor:\s*([^\)]+)\)/i);
-							if (m) {
-								value = m[1];
-							} else {
-								// try ": X" after a label
-								const m2 = s.match(/:\s*([0-9]+(?:\.[0-9]+)?)/);
-								if (m2) value = m2[1];
-							}
-							// derive crit key before any separator like ' - ', ' (' or ':'
-							crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
-						}
-						// tolerant friendly lookup: try exact key, normalized key (remove spaces), then substring matches
-						const normCrit = String(crit).replace(/\s+/g, '');
-						let friendlyText = friendly[crit] || friendly[normCrit] || null;
-						if (!friendlyText) {
-							// try common substrings to match keys like 'apmDominante' -> 'apmDominante<0.8'
-							for (const fk of Object.keys(friendly)) {
-								try {
-									if (String(crit).toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase()) || normCrit.toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase())) { friendlyText = friendly[fk]; break; }
-								} catch(_) {}
-							}
-						}
-						if (!friendlyText) friendlyText = crit;
-						// format certain values: percentual for qualidadeBaixa, minuto for janelaTempo
-						let line = friendlyText;
-						// Special formatting for chutesNoAlvoCasa<2: show required minimum (from criterion) and current value
-						if (String(crit).startsWith('chutesNoAlvoCasa')) {
-							// try to extract numeric minimum from criterion like 'chutesNoAlvoCasa<2' or 'chutesNoAlvoCasa<=2'
-							const m = String(crit).match(/<\s*=?\s*(\d+)/);
-							const minReq = m ? m[1] : null;
-							const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
-							if (minReq) {
-								line = `Chute no alvo(min ${minReq})(valor: ${atual})`;
-							} else {
-								line = `${friendlyText} (Atual: ${atual})`;
-							}
-						} else {
-							let suffix = '';
-							if (value !== null && value !== undefined && value !== '') {
-								const critLower = String(crit).toLowerCase();
-								// qualidade percent
-								if (crit === 'qualidadeBaixa' || critLower.includes('qualidade')) {
-									suffix = ` - Valor atual: ${String(value)}%`;
-								} else if (crit === 'janelaTempo') {
-									suffix = ` - Valor atual: ${String(value)}`;
-								} else if (critLower.startsWith('ratio') || critLower.includes('ratio')) {
-									const num = parseFloat(value);
-									const v = Number.isFinite(num) ? num.toFixed(2) : value;
-									suffix = ` - Valor atual: ${v}`;
-								} else if (critLower.startsWith('placar') || critLower.includes('placar')) {
-									suffix = ` - Valor atual: ${String(value)}`;
-								} else if (critLower.includes('pressao') || critLower.startsWith('pressao')) {
-									const numP = parseFloat(value);
-									const vp = Number.isFinite(numP) ? numP.toFixed(2) : value;
-									suffix = ` - Valor atual: ${vp}`;
-								} else if (critLower.includes('dominancia') || critLower.startsWith('dominancia') || critLower.includes('apmdominante')) {
-									// APM / dominância: format to 2 decimals
-									const numD = parseFloat(value);
-									const vd = Number.isFinite(numD) ? numD.toFixed(2) : value;
-									suffix = ` - Valor atual: ${vd}`;
-								} else if (critLower.includes('atq') || critLower.includes('ataques') || critLower.includes('ataque') || critLower.includes('atqdominante') || critLower.includes('atqdominante')) {
-									// attacks: integer display
-									const numA = parseInt(value, 10);
-									const va = Number.isFinite(numA) ? String(numA) : String(value);
-									suffix = ` - Valor atual: ${va}`;
-								} else {
-									suffix = ` - Valor atual: ${String(value)}`;
-								}
-							}
-							line = friendlyText + suffix;
-						}
-						// If criterion is placar!=..., override friendly text to readable form
-						if (String(crit).startsWith('placar')) {
-							const atual = (value !== null && value !== undefined && value !== '') ? String(value) : 'N/D';
-							// try to extract expected score from crit like 'placar!=1-1' or 'placar!= 1-1'
-							const expectMatch = String(crit).match(/!=\s*([0-9]+-[0-9]+)/);
-							const expected = expectMatch ? expectMatch[1] : (String(crit).match(/([0-9]+-[0-9]+)/) || [null, '1-1'])[1];
-							line = `Placar exato ${expected} - Valor atual: ${atual}`;
-						}
-						// if there's a telegram message available, make the line clickable
-						if (telegramMsg) {
-							html += `<li class="text-red-400"><a href="#" onclick="event.preventDefault(); openTelegramPreview('${escapeHtml(String(telegramMsg))}');" class="underline decoration-dotted">${line}</a></li>`;
-						} else {
-							html += `<li class="text-red-400">${line}</li>`;
-						}
-					}
-				}
-				html += '</ul>';
+			// accordion header for the method
+			html += `<div class="mb-1 border-b border-gray-800 pb-1">
+						<button type="button" class="w-full flex justify-between items-center method-header" data-method="${escapeHtml(method)}" onclick="(function(b){const t=b.nextElementSibling; if(t) t.style.display = (t.style.display==='none'?'block':'none');})(this);">
+							<div>
+								<div class="font-bold text-2xs text-gray-200">${method.replace(/_/g,' ')}</div>
+								${periodLabel}
+							</div>
+							<div class="ml-3">${statusBadge}</div>
+						</button>
+					 </div>`;
+			// Build unified criteria view: show each criterion green if satisfied, red if missing
+			const expected = Array.isArray(entry.expected) ? entry.expected.slice() : [];
+			let satisfied = [];
+			if (Array.isArray(entry.satisfied)) satisfied = entry.satisfied.slice();
+			else if (entry.satisfied && typeof entry.satisfied === 'object') {
+				// convert map/object to list of keys
+				try { satisfied = Object.keys(entry.satisfied); } catch(e) { satisfied = []; }
 			}
+			const missing = Array.isArray(entry.missing) ? entry.missing.slice() : [];
+			// If entry.met is true, consider expected criteria satisfied (friendly UX)
+			if (entry.met && expected.length>0) {
+				satisfied = expected.slice();
+			}
+			// Ensure time-window appears among expected for clarity
+			if (methodPeriods[method] && !expected.includes('janelaTempo')) expected.unshift('janelaTempo');
+			// union of keys preserving order: expected then satisfied missing extras
+			const seenCriteria = new Set();
+			const allCriteria = [];
+			for (const c of expected.concat(satisfied).concat(missing)) { if (!seenCriteria.has(String(c))) { seenCriteria.add(String(c)); allCriteria.push(c); } }
+			// criteria panel (hidden by default)
+			html += '<div class="method-panel" style="display:block;margin-bottom:6px;">';
+			html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
+			for (const critRaw of allCriteria) {
+				// determine if this criterion is satisfied
+				const isSatisfied = satisfied && satisfied.some(s => String(s) === String(critRaw));
+				const isMissing = missing && missing.some(m => String(m) === String(critRaw));
+				// Fallback heuristics: mark time-window satisfied when current minute falls into method period
+				try {
+					if (!isSatisfied) {
+						const critKey = (typeof critRaw === 'string') ? critRaw : (critRaw && critRaw.key ? String(critRaw.key) : String(critRaw));
+						if (critKey === 'janelaTempo') {
+							const t = jogo && jogo.tempo ? parseInt(String(jogo.tempo).replace(/[^0-9]/g,''),10) : 0;
+							// simple range detection based on method name
+							if (method && String(method).includes('2T') && t >= 46 && t <= 85) {
+								// mark as satisfied (user is in 2nd half)
+								// mutate local satisfied copy so subsequent checks see it
+								satisfied.push('janelaTempo');
+								// update flag
+								// eslint-disable-next-line no-unused-vars
+								// continue
+							}
+						} else if (critKey.toLowerCase().includes('score') && (value !== null && value !== undefined && value !== '')) {
+							// if analyzer reported a numeric score/value, consider it satisfied for visibility
+							try { const num = parseFloat(value); if (!Number.isNaN(num) && num > 0) { satisfied.push(critKey); } } catch(_){}
+						}
+					}
+				} catch(e) { /* ignore heuristic errors */ }
+				// reuse previous parsing to derive friendly text and value
+				let crit = critRaw;
+				let value = null;
+				if (critRaw && typeof critRaw === 'object') {
+					crit = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
+					value = critRaw.value ?? critRaw.valor ?? critRaw.valorAtual ?? critRaw.val ?? critRaw.v;
+				} else if (typeof critRaw === 'string') {
+					const s = critRaw;
+					const m = s.match(/\(valor:\s*([^\)]+)\)/i);
+					if (m) value = m[1]; else {
+						const m2 = s.match(/:\s*([0-9]+(?:\.[0-9]+)?)/);
+						if (m2) value = m2[1];
+					}
+					crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
+				}
+				const normCrit = String(crit).replace(/\s+/g, '');
+				let friendlyText = friendly[crit] || friendly[normCrit] || null;
+				if (!friendlyText) {
+					for (const fk of Object.keys(friendly)) {
+						try { if (String(crit).toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase()) || normCrit.toLowerCase().includes(fk.replace(/<.*$/,'').toLowerCase())) { friendlyText = friendly[fk]; break; } } catch(_) {}
+					}
+				}
+				if (!friendlyText) friendlyText = crit;
+				// format display line
+				let line = friendlyText;
+				if (String(crit).startsWith('chutesNoAlvoCasa')) {
+					const m = String(crit).match(/<\s*=?\s*(\d+)/);
+					const minReq = m ? m[1] : null;
+					const atual = (value !== null && value !== undefined && value !== '') ? String(value) : '—';
+					if (minReq) line = `Chute no alvo(min ${minReq})(valor: ${atual})`; else line = `${friendlyText} (Atual: ${atual})`;
+				} else {
+					let suffix = '';
+					if (value !== null && value !== undefined && value !== '') {
+						const critLower = String(crit).toLowerCase();
+						if (crit === 'qualidadeBaixa' || critLower.includes('qualidade')) suffix = ` - Valor atual: ${String(value)}%`;
+						else if (crit === 'janelaTempo') suffix = ` - Valor atual: ${String(value)}`;
+						else if (critLower.startsWith('ratio') || critLower.includes('ratio')) { const num = parseFloat(value); const v = Number.isFinite(num) ? num.toFixed(2) : value; suffix = ` - Valor atual: ${v}`; }
+						else if (critLower.startsWith('placar') || critLower.includes('placar')) suffix = ` - Valor atual: ${String(value)}`;
+						else if (critLower.includes('pressao') || critLower.startsWith('pressao')) { const numP = parseFloat(value); const vp = Number.isFinite(numP) ? numP.toFixed(2) : value; suffix = ` - Valor atual: ${vp}`; }
+						else if (critLower.includes('dominancia') || critLower.startsWith('dominancia') || critLower.includes('apmdominante')) { const numD = parseFloat(value); const vd = Number.isFinite(numD) ? numD.toFixed(2) : value; suffix = ` - Valor atual: ${vd}`; }
+						else if (critLower.includes('atq') || critLower.includes('ataques') || critLower.includes('ataque') || critLower.includes('atqdominante')) { const numA = parseInt(value, 10); const va = Number.isFinite(numA) ? String(numA) : String(value); suffix = ` - Valor atual: ${va}`; }
+						else suffix = ` - Valor atual: ${String(value)}`;
+					}
+					line = friendlyText + suffix;
+				}
+				// color and link
+				const liClass = isSatisfied ? 'text-emerald-300' : (isMissing ? 'text-red-400' : 'text-amber-300');
+				const icon = isSatisfied ? '✅' : (isMissing ? '❌' : '⚪');
+				if (telegramMsg) html += `<li class="${liClass}"><span style="display:inline-block;width:20px">${icon}</span><a href="#" onclick="event.preventDefault(); openTelegramPreview('${escapeHtml(String(telegramMsg))}');" class="underline decoration-dotted">${line}</a></li>`;
+				else html += `<li class="${liClass}"><span style="display:inline-block;width:20px">${icon}</span>${line}</li>`;
+			}
+			html += '</ul>';
 			html += '</div>';
 		}
 		html += '</div>';
@@ -678,6 +721,14 @@
 	function escapeHtml(str) {
 		return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 	}
+
+	// Abre o link da partida em nova aba. Se a URL for local (screenshot endpoint), abre em nova aba também.
+	function openGameLink(url) {
+		try {
+			if (!url) return alert('URL não disponível para este jogo.');
+			window.open(url, '', 'width=800,height=300');
+		} catch (e) { alert('Falha ao abrir link: ' + (e && e.message)); }
+	}
 </script>
 
 
@@ -706,7 +757,8 @@
 				const header = el.querySelector('.card-header') || el.querySelector('.header') || el;
 				// verifica se já temos badge
 				if (header.querySelector('.engine-badge')) return;
-				if (j.engineAnalysis && Object.keys(j.engineAnalysis).length > 0) {
+				// show badge when analysis object exists (even empty) — renderer may attach empty object
+				if (j.engineAnalysis || j._engineAnalysis) {
 					const span = document.createElement('span');
 					span.className = 'engine-badge';
 					span.title = 'Análise do motor disponível — clique para ver detalhes';

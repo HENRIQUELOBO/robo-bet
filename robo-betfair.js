@@ -13,6 +13,20 @@ const WHITELIST_HOSTNAMES = (process.env.WHITELIST_HOSTNAMES || '').split(',').m
 const engine = require('./engine_quant');
 const logger = require('./logger');
 
+// Proteções e tempos globais
+const EVAL_TIMEOUT_MS = 10000; // 10s para qualquer evaluate/extração
+const GOTO_TIMEOUT_MS = 10000; // 10s para navigations/goto
+const WATCHDOG_INATIVIDADE_MS = 3 * 60 * 1000; // 3 minutos
+const RELOAD_INTERVAL_MS = 10 * 60 * 1000; // recarregar a cada 10 minutos por segurança
+
+// Helper para proteger evaluate() e evitar Promises pendentes
+async function safeEvaluate(frameOrPage, fn, ...args) {
+    return await Promise.race([
+        frameOrPage.evaluate(fn, ...args),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timeout')), EVAL_TIMEOUT_MS))
+    ]);
+}
+
 const poolDeJogos = new Map();
 const alertasDisparadosPorJogo = new Map();
 
@@ -118,6 +132,7 @@ async function iniciarRobo() {
 
                 await novaAba.setRequestInterception(true);
                 const thirdPartyPattern = /goog(le|analytics)|doubleclick|analytics|tracker|track|ads|adservice|cdn-cgi|facebook|pixel|hotjar|mixpanel|segment|amplitude/i;
+                const allowedHostnames = [];
                 novaAba.on('request', req => {
                     const pt = req.resourceType();
                     const url = req.url();
@@ -129,26 +144,18 @@ async function iniciarRobo() {
                         const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
                         if (!isWhitelisted) {
                             if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
-                                if (DEBUG_BLOCKED) {
-                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                }
+                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
                                 return req.abort();
                             }
 
                             if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
-                                if (DEBUG_BLOCKED) {
-                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                }
-
+                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
                                 return req.abort();
                             }
 
 
                             if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
-                                if (DEBUG_BLOCKED) {
-                                    fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                }
-
+                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
                                 return req.abort();
                             }
                         }
@@ -162,7 +169,7 @@ async function iniciarRobo() {
                 // alguns ambientes podem não suportar intercept/evaluateOnNewDocument
             }
             await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-            await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded'});
+            await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS});
 
             try {
                 const acceptSelectors = [
@@ -177,9 +184,7 @@ async function iniciarRobo() {
                         if (el) {
                             await novaAba.evaluate(s => {
                                 const e = document.querySelector(s);
-                                if (e) {
-                                    e.click();
-                                }
+                                if (e) e.click();
                             }, sel);
                             await novaAba.waitForTimeout(600);
                         }
@@ -191,9 +196,39 @@ async function iniciarRobo() {
                 console.warn(`[acceptSelectors] erro: ${e}`);
             }
 
+            // marcar activity events para alimentar o watchdog (XHR/Fetch/requests)
+            novaAba.on('requestfinished', req => {
+                try {
+                    const pt = req.resourceType();
+                    if (['xhr', 'fetch', 'document', 'script', 'other'].includes(pt)) {
+                        const jogoEntry = poolDeJogos.get(idJogo_unico);
+                        if (jogoEntry) jogoEntry._ultimaAtualizacao = Date.now();
+                    }
+                } catch (e) {}
+            });
+            novaAba.on('response', res => {
+                try {
+                    const jogoEntry = poolDeJogos.get(idJogo_unico);
+                    if (jogoEntry) jogoEntry._ultimaAtualizacao = Date.now();
+                } catch (e) {}
+            });
+            novaAba.on('close', () => {
+                process.stderr.write(`[PAGE] aba id=${idJogo_unico} fechada inesperadamente. Forçando restart.\n`);
+                try { if (globalBrowser) globalBrowser.close().catch(()=>{}); } catch(e){}
+                process.exit(1);
+            });
+            novaAba.on('error', err => {
+                process.stderr.write(`[PAGE] erro na aba id=${idJogo_unico} -> ${err && err.message ? err.message : err}\n`);
+            });
+
             poolDeJogos.set(idJogo_unico, {
                 pageContext: novaAba,
                 nomePartida: 'Carregando...',
+                // URL original usada para iniciar o scanner
+                url: urlValida,
+                _ultimaAtualizacao: Date.now(),
+                _lastReload: Date.now(),
+                _checksSinceReload: 0,
                 id: idJogo_unico,
                 tempo: 0,
                 placar: '0-0',
@@ -278,7 +313,33 @@ async function iniciarRobo() {
                 } catch (e) {}
 
                 try {
-                    const dadosContexto = await jogo.pageContext.evaluate(() => {
+                    // Watchdog: detectar inatividade silenciosa
+                    try {
+                        if (jogo._ultimaAtualizacao && (Date.now() - jogo._ultimaAtualizacao) > WATCHDOG_INATIVIDADE_MS) {
+                            process.stderr.write(`[WATCHDOG] jogo id=${idJogo} sem atualizacao por mais de ${WATCHDOG_INATIVIDADE_MS}ms. Forçando reinicio.\n`);
+                            // fechar browser e sair para que gerenciador reinicie
+                            try { if (globalBrowser) await globalBrowser.close(); } catch (e) {}
+                            process.exit(1);
+                        }
+                    } catch (e) {}
+                    //
+                    // reload periódico de segurança (anti-fome de socket)
+                    try {
+                        jogo._checksSinceReload = (jogo._checksSinceReload || 0) + 1;
+                        if (!jogo._lastReload) jogo._lastReload = Date.now();
+                        if ((Date.now() - jogo._lastReload) > RELOAD_INTERVAL_MS || jogo._checksSinceReload > 60) {
+                            try {
+                                jogo._checksSinceReload = 0;
+                                jogo._lastReload = Date.now();
+                                process.stdout.write(`[RELOAD] Recarrengando página id=${idJogo} por segurança.\n`);
+                                await jogo.pageContext.reload({waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS});
+                            } catch (e) {
+                                process.stderr.write(`[RELOAD] falha ao recarregar id=${idJogo} -> ${e && e.message ? e.message : e}\n`);
+                            }
+                        }
+                    } catch (e) {}
+                    //
+                    const dadosContexto = await safeEvaluate(jogo.pageContext, () => {
                         let info = {timeCasa: '', timeFora: '', tituloAba: document.title};
                         let rootDiv = document.querySelector('[wire\\:snapshot]');
 
@@ -334,15 +395,22 @@ async function iniciarRobo() {
                         }
                     }
 
-                    const todosOsFrames = await jogo.pageContext.frames();
-                    let frameRadar = todosOsFrames.find(f =>
-                        f.url().includes('radarfutebol.xyz/scoreboards') ||
-                        f.name() === 'iframe-williamhill'
-                    );
+                    // atualizar watchdog também se conseguimos extrair contexto de título/teams
+                    try {
+                        if (dadosContexto && (dadosContexto.timeCasa || dadosContexto.timeFora || dadosContexto.tituloAba)) {
+                            jogo._ultimaAtualizacao = Date.now();
+                        }
+                    } catch (e) {}
 
-                    let contextoAlvo = frameRadar ? frameRadar : jogo.pageContext;
+                    const todosOsFrames = jogo.pageContext.frames();
+                     let frameRadar = todosOsFrames.find(f =>
+                         f.url().includes('radarfutebol.xyz/scoreboards') ||
+                         f.name() === 'iframe-williamhill'
+                     );
 
-                    const r = await contextoAlvo.evaluate(() => {
+                     let contextoAlvo = frameRadar ? frameRadar : jogo.pageContext;
+
+                    const r = await safeEvaluate(contextoAlvo, () => {
                         let tempoLocal = 0;
                         let placarLocal = '';
                         let statusIntervalo = false;
@@ -474,6 +542,8 @@ async function iniciarRobo() {
                     });
 
                     if (r) {
+                        // atualização bem sucedida -> renovar watchdog timestamp
+                        try { jogo._ultimaAtualizacao = Date.now(); } catch (e) {}
                         if (!r.statusEncerrado && r.tempoLocal >= 90 && !r.statusIntervalo) {
                             if (r.tempoLocal === jogo.ultimoTempoRegistrado) {
                                 jogo.ciclosSemMudancaTempo = (jogo.ciclosSemMudancaTempo || 0) + 1;
@@ -719,7 +789,7 @@ async function iniciarRobo() {
                     // alguns ambientes podem não suportar intercept/evaluateOnNewDocument
                 }
                 await novaAba.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
-                await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded'});
+                await novaAba.goto(urlValida, {waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS});
 
                 try {
                     const acceptSelectors = [
@@ -746,6 +816,11 @@ async function iniciarRobo() {
                 poolDeJogos.set(idJogo_unico, {
                     pageContext: novaAba,
                     nomePartida: 'Carregando...',
+                    // URL original usada para iniciar o scanner (prompt flow)
+                    url: urlValida,
+                    _ultimaAtualizacao: Date.now(),
+                    _lastReload: Date.now(),
+                    _checksSinceReload: 0,
                     id: idJogo_unico,
                     tempo: 0,
                     placar: '0-0',
@@ -861,4 +936,5 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
+
 

@@ -65,6 +65,10 @@ function isSustainedPressure(jogo, team) { const key = team === 'casa' ? '_press
 
 function processarMotorDeRegras(idJogo, jogo, alertas) {
     const minAtual = jogo.tempo;
+    // per-invocation analyzer instance collects diagnostics and decisions
+    // and will be attached to the jogo object as `_engineAnalysis` so
+    // the rest of the system (logger / UI) can inspect it.
+    const analyzer = createAnalyzer();
 
     // --- PERF: cache counts used multiple times in this tick (avoid repeated filters)
     const now = minAtual;
@@ -536,6 +540,22 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
             }
         }
     }
+    // attach analyzer snapshot to jogo for external consumption (logger / UI)
+    try {
+        const snap = analyzer.get && typeof analyzer.get === 'function' ? analyzer.get() : null;
+        // ensure we never set null — keep previous value or set empty object
+        if (snap && Object.keys(snap).length > 0) {
+            jogo._engineAnalysis = snap;
+        } else {
+            // preserve existing _engineAnalysis if present, otherwise set to empty object
+            jogo._engineAnalysis = jogo._engineAnalysis && Object.keys(jogo._engineAnalysis || {}).length > 0
+                ? jogo._engineAnalysis
+                : {};
+        }
+        // lightweight debug to help detect why UI sees nulls
+        try { console.debug && console.debug('[ENGINE] attached _engineAnalysis for', jogo.id, 'methods=', Object.keys(jogo._engineAnalysis || {}).length); } catch (e) {}
+    } catch (e) { /* non-fatal - keep existing state */ }
+
 }
 
 module.exports = { processarMotorDeRegras };
