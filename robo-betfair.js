@@ -167,7 +167,7 @@ async function iniciarRobo() {
 
             if (jogo._encerrando) continue;
         }
-    }, 10000);
+    }, 30000);
 
     logger.registrarCallbackAdicionarJogo(async (urlValida) => {
         const idJogo_unico = String(urlValida.split('/').pop() || Date.now());
