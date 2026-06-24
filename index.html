@@ -286,22 +286,6 @@
                             <div class="flex justify-between px-1 mb-0.5"><span class="text-gray-400">Chutes Alvo/Fora:</span><span class="text-amber-500 font-bold">${jogo.momentum.chutesNoAlvoCasa}/${jogo.momentum.chutesParaForaCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.chutesNoAlvoFora}/${jogo.momentum.chutesParaForaFora}</span></div>
                             <div class="flex justify-between px-1"><span class="text-gray-400">Escanteios:</span><span class="text-amber-500 font-bold">${jogo.momentum.escanteiosCasa}</span><span class="text-gray-500">vs</span><span class="text-gray-300 font-bold">${jogo.momentum.escanteiosFora}</span></div>
                         </div>
--
-                        ${jogo.id ? `
-                        <div class="mt-2 rounded-xl overflow-hidden border border-gray-800/60 bg-gray-950/30">
-                            <div class="text-center font-bold text-gray-500 text-3xs tracking-wider py-1 border-b border-gray-900/50">📈 SOFASCORE — MOMENTUM</div>
-                            <img
-                                id="momentum-img-${jogo.id}"
-                                src="${new URL(`/screenshot/${jogo.id}`, API_BASE).toString()}?t=${Date.now()}"
-                                onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
-                                onload="this.style.display='block';this.nextElementSibling.style.display='none';"
-                                onclick="abrirModal(this.src)"
-                                class="momentum-thumb"
-                                style="width:100%;display:block;min-height:80px;background:#030712;"
-                                alt="Momentum Chart"
-                            />
-                            <div style="display:none;" class="text-center text-gray-600 text-3xs font-mono py-4">⏳ Aguardando screenshot (~30s)...</div>
-                        </div>` : ''}
                     </div>
                 `;
 			gridJogos.innerHTML += cardHtml;
