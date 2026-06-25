@@ -243,7 +243,12 @@ async function iniciarRobo() {
                 const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
                 const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
                 novaAba.on('console', msg => {
-                    try { process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${msg.text()}\n`); } catch(_){}
+                    try {
+                        const txt = msg.text ? msg.text() : String(msg);
+                        // filter noisy preload/font warnings to reduce log spam
+                        if (/was preloaded using link preload but not used/i.test(txt)) return;
+                        process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${txt}\n`);
+                    } catch(_){}
                 });
                 novaAba.on('pageerror', err => {
                     try { process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); } catch(_){}
@@ -908,7 +913,7 @@ async function iniciarRobo() {
                 try {
                     const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
                     const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
-                    novaAba.on('console', msg => { try{ process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${msg.text()}\n`); }catch(_){} });
+                    novaAba.on('console', msg => { try{ const t = msg.text ? msg.text() : String(msg); if (!/was preloaded using link preload but not used/i.test(t)) process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${t}\n`); }catch(_){} });
                     novaAba.on('pageerror', err => { try{ process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); }catch(_){} });
 
                     let hbFails = 0;
