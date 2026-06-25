@@ -27,6 +27,27 @@ async function safeEvaluate(frameOrPage, fn, ...args) {
     ]);
 }
 
+// Wrapper around safeEvaluate that protects the watchdog from transient evaluate failures.
+// If an evaluate times out or throws, we log a warning and refresh the game's "_ultimaAtualizacao"
+// timestamp to avoid immediate watchdog restarts for short-lived evaluate problems.
+async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
+    try {
+        const res = await safeEvaluate(frameOrPage, fn, ...args);
+        // successful evaluate -> update timestamp
+        try { if (jogo) jogo._ultimaAtualizacao = Date.now(); } catch (e) {}
+        return res;
+    } catch (err) {
+        try {
+            const id = jogo && jogo.id ? jogo.id : 'unknown';
+            process.stderr.write(`[WATCHDOG_HELPER] evaluate failed for id=${id} -> ${err && err.message ? err.message : err}\n`);
+            // give a small grace so a single evaluate timeout doesn't trigger the watchdog
+            if (jogo) jogo._ultimaAtualizacao = Date.now();
+        } catch (e) {}
+        // rethrow so callers can still handle if needed
+        throw err;
+    }
+}
+
 const poolDeJogos = new Map();
 const alertasDisparadosPorJogo = new Map();
 
@@ -360,7 +381,7 @@ async function iniciarRobo() {
                         }
                     } catch (e) {}
                     //
-                    const dadosContexto = await safeEvaluate(jogo.pageContext, () => {
+                    const dadosContexto = await safeEvaluateWithWatchdog(jogo, jogo.pageContext, () => {
                         let info = {timeCasa: '', timeFora: '', tituloAba: document.title};
                         let rootDiv = document.querySelector('[wire\\:snapshot]');
 
@@ -431,7 +452,7 @@ async function iniciarRobo() {
 
                      let contextoAlvo = frameRadar ? frameRadar : jogo.pageContext;
 
-                    const r = await safeEvaluate(contextoAlvo, () => {
+                    const r = await safeEvaluateWithWatchdog(jogo, contextoAlvo, () => {
                         let tempoLocal = 0;
                         let placarLocal = '';
                         let statusIntervalo = false;
