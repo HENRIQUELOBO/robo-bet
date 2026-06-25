@@ -165,18 +165,18 @@ async function iniciarRobo() {
                         const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
                         if (!isWhitelisted) {
                             if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
-                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
                                 return req.abort();
                             }
 
                             if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
-                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
                                 return req.abort();
                             }
 
 
                             if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
-                                if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
+                                if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
                                 return req.abort();
                             }
                         }
@@ -237,6 +237,49 @@ async function iniciarRobo() {
             } catch (e) { /* non-fatal */
                 console.warn(`[acceptSelectors] erro: ${e}`);
             }
+
+            // attach page-level diagnostics and heartbeat to keep watchdog happy
+            try {
+                const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
+                const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
+                novaAba.on('console', msg => {
+                    try { process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${msg.text()}\n`); } catch(_){}
+                });
+                novaAba.on('pageerror', err => {
+                    try { process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); } catch(_){}
+                });
+
+                // heartbeat state
+                let hbFails = 0;
+                const hb = setInterval(async () => {
+                    try {
+                        await novaAba.evaluate(() => 1);
+                        hbFails = 0;
+                        const j = poolDeJogos.get(idJogo_unico);
+                        if (j) j._ultimaAtualizacao = Date.now();
+                    } catch (e) {
+                        hbFails++;
+                        process.stderr.write(`[HEARTBEAT] id=${idJogo_unico} falha #${hbFails} -> ${e && e.message ? e.message : e}\n`);
+                        if (hbFails >= HEARTBEAT_FAILS) {
+                            try {
+                                process.stderr.write(`[HEARTBEAT] id=${idJogo_unico} excedeu falhas. Tentando recarregar...\n`);
+                                await novaAba.reload({waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS});
+                                hbFails = 0;
+                                const j2 = poolDeJogos.get(idJogo_unico);
+                                if (j2) j2._ultimaAtualizacao = Date.now();
+                            } catch (e2) {
+                                process.stderr.write(`[HEARTBEAT] reload falhou para id=${idJogo_unico} -> ${e2 && e2.message ? e2.message : e2}\n`);
+                                try { clearInterval(hb); } catch(_){}
+                                try { novaAba.close().catch(()=>{}); } catch(_){}
+                            }
+                        }
+                    }
+                }, HEARTBEAT_MS);
+
+                // store heartbeat so graceful shutdown can clear it
+                jogoHeartbeat = {interval: hb};
+                // we'll attach the interval id into the page via the pool entry after creation below
+            } catch (e) {}
 
             // marcar activity events para alimentar o watchdog (XHR/Fetch/requests)
             novaAba.on('requestfinished', req => {
@@ -317,6 +360,12 @@ async function iniciarRobo() {
                 historicoChForaFora: [],
                 _encerrando: false
             });
+
+            // attach heartbeat interval reference into pool entry so we can clear on shutdown
+            try {
+                const entry = poolDeJogos.get(idJogo_unico);
+                if (entry && typeof jogoHeartbeat !== 'undefined' && jogoHeartbeat && jogoHeartbeat.interval) entry._heartbeat = jogoHeartbeat.interval;
+            } catch (e) {}
 
             alertasDisparadosPorJogo.set(idJogo_unico, {
                 metodo1: false,
@@ -805,20 +854,20 @@ async function iniciarRobo() {
 
                             // Bloquear recursos pesados e scripts de terceiros conhecidos
                             const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
-                            if (!isWhitelisted) {
-                                if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
-                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                    return req.abort();
-                                }
-                                if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
-                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                    return req.abort();
-                                }
-                                // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
-                                if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
-                                    if (DEBUG_BLOCKED) fs.appendFileSync('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`);
-                                    return req.abort();
-                                }
+                                    if (!isWhitelisted) {
+                                                if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
+                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                                    return req.abort();
+                                                }
+                                                if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
+                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                                    return req.abort();
+                                                }
+                                                // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
+                                                if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
+                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                                    return req.abort();
+                                                }
                             }
 
                             // permitir o resto
@@ -855,6 +904,42 @@ async function iniciarRobo() {
                     }
                 } catch (e) { /* non-fatal */
                 }
+                // attach diagnostics and heartbeat for prompt-created pages
+                try {
+                    const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
+                    const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
+                    novaAba.on('console', msg => { try{ process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${msg.text()}\n`); }catch(_){} });
+                    novaAba.on('pageerror', err => { try{ process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); }catch(_){} });
+
+                    let hbFails = 0;
+                    const hb = setInterval(async () => {
+                        try {
+                            await novaAba.evaluate(() => 1);
+                            hbFails = 0;
+                            const j = poolDeJogos.get(idJogo_unico);
+                            if (j) j._ultimaAtualizacao = Date.now();
+                        } catch (e) {
+                            hbFails++;
+                            process.stderr.write(`[HEARTBEAT] id=${idJogo_unico} falha #${hbFails} -> ${e && e.message ? e.message : e}\n`);
+                            if (hbFails >= HEARTBEAT_FAILS) {
+                                try {
+                                    process.stderr.write(`[HEARTBEAT] id=${idJogo_unico} excedeu falhas. Tentando recarregar...\n`);
+                                    await novaAba.reload({waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS});
+                                    hbFails = 0;
+                                    const j2 = poolDeJogos.get(idJogo_unico);
+                                    if (j2) j2._ultimaAtualizacao = Date.now();
+                                } catch (e2) {
+                                    process.stderr.write(`[HEARTBEAT] reload falhou para id=${idJogo_unico} -> ${e2 && e2.message ? e2.message : e2}\n`);
+                                    try { clearInterval(hb); } catch(_){}
+                                    try { novaAba.close().catch(()=>{}); } catch(_){}
+                                }
+                            }
+                        }
+                    }, HEARTBEAT_MS);
+
+                    // store into temporary so we can attach after pool set
+                    jogoHeartbeat = {interval: hb};
+                } catch (e) {}
                 poolDeJogos.set(idJogo_unico, {
                     pageContext: novaAba,
                     nomePartida: 'Carregando...',
@@ -910,6 +995,12 @@ async function iniciarRobo() {
                     _encerrando: false
                 });
 
+                // attach heartbeat interval reference into the pool entry if present
+                try {
+                    const entry = poolDeJogos.get(idJogo_unico);
+                    if (entry && typeof jogoHeartbeat !== 'undefined' && jogoHeartbeat && jogoHeartbeat.interval) entry._heartbeat = jogoHeartbeat.interval;
+                } catch (e) {}
+
                 alertasDisparadosPorJogo.set(idJogo_unico, {
                     metodo1: false,
                     metodo2: false,
@@ -945,6 +1036,8 @@ async function _gracefulShutdown(signal) {
             for (let [id, jogo] of poolDeJogos.entries()) {
                 try {
                     jogo._encerrando = true;
+                    // clear heartbeat interval if present
+                    try { if (jogo._heartbeat) clearInterval(jogo._heartbeat); } catch(_) {}
                     if (jogo.pageContext && jogo.pageContext.close) await jogo.pageContext.close();
                 } catch (_) {
                 }
