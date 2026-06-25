@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Painel de Histórico - LOBO</title>
+	<title>Wolf Quant - Live Pro</title>
+	<link rel="icon" type="image/x-icon" href="asset/icon.png">
   <style>
     body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:#0b1220;color:#e6eef8;padding:20px}
     .totais{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
@@ -23,6 +24,9 @@
     .res-span.muted { background:transparent; color:#99a7bf; font-weight:600 }
     /* small edit icon for action when result exists */
     .action-icon{padding:6px 8px;border-radius:6px;border:0;background:#06202a;color:#9fd0ff;cursor:pointer}
+    /* column alignment helpers */
+    .col-center { text-align: center; }
+    .col-left { text-align: left; }
   </style>
 </head>
 <body>
@@ -45,9 +49,9 @@
     </div>
   </div>
 
-  <div class="card">
+    <div class="card">
     <strong>Jogos (confirmações)</strong>
-    <div class="lista"><table id="tbl"><thead><tr><th>ID</th><th>Data</th><th>Partida</th><th>Tipo</th><th>Tempo</th><th>Placar</th><th>Resultado</th><th>Ação</th></tr></thead><tbody></tbody></table></div>
+    <div class="lista"><table id="tbl"><thead><tr><th>ID</th><th>Data</th><th class="col-left">Partida</th><th>Tipo</th><th class="col-center">Tempo</th><th class="col-center">Placar</th><th class="col-center">Qualidade</th><th>Resultado</th><th>Ação</th></tr></thead><tbody></tbody></table></div>
   </div>
 
 <script>
@@ -96,7 +100,7 @@ async function carregar(){
   const PAGE = 200;
   rows.slice(0, PAGE).forEach(row=>{
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${row.id}</td><td>${row.dateTime}</td><td title="${row.raw}">${row.partida}</td><td>${row.tipo}</td><td>${row.tempo}</td><td>${row.placar}</td><td class="res"><span class="res-span">${row.resultado||'?'}</span></td><td></td>`;
+    tr.innerHTML = `<td>${row.id}</td><td>${row.dateTime}</td><td class="col-left" title="${row.raw}">${row.partida}</td><td>${row.tipo}</td><td class="col-center">${row.tempo}</td><td class="col-center">${row.placar}</td><td class="col-center">${row.qualidade}</td><td class="res"><span class="res-span">${row.resultado||'?'}</span></td><td></td>`;
     // render result with button-like highlight
     const resSpan = tr.querySelector('.res-span');
     const pending = confirmacoes[String(row.id)];
