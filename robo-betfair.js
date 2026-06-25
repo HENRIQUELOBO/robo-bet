@@ -180,13 +180,34 @@ async function iniciarRobo() {
                 ];
                 for (let sel of acceptSelectors) {
                     try {
+                        // querySelector doesn't support :contains(...) — handle that case specially
+                        const containsMatch = sel.match(/^button:contains\((?:"|')?(.*?)(?:"|')?\)$/i);
+                        if (containsMatch) {
+                            const text = containsMatch[1];
+                            // find button by visible text
+                            const found = await novaAba.evaluateHandle((txt) => {
+                                const els = Array.from(document.querySelectorAll('button'));
+                                for (const b of els) {
+                                    if (b && b.textContent && b.textContent.trim().toLowerCase().includes(txt.toLowerCase())) return b;
+                                }
+                                return null;
+                            }, text);
+                            const element = found && (await found.asElement ? await found.asElement() : null);
+                            if (element) {
+                                await element.click();
+                                await (novaAba.waitForTimeout ? novaAba.waitForTimeout(600) : new Promise(r => setTimeout(r, 600)));
+                            }
+                            try { if (found && typeof found.dispose === 'function') found.dispose(); } catch(_){}
+                            continue;
+                        }
+
                         const el = await novaAba.$(sel);
                         if (el) {
                             await novaAba.evaluate(s => {
                                 const e = document.querySelector(s);
                                 if (e) e.click();
                             }, sel);
-                            await novaAba.waitForTimeout(600);
+                            await (novaAba.waitForTimeout ? novaAba.waitForTimeout(600) : new Promise(r => setTimeout(r, 600)));
                         }
                     } catch (e) { /* ignore per-selector errors */
                         console.warn(`[acceptSelectors] ${sel} erro: ${e}`);
@@ -806,7 +827,7 @@ async function iniciarRobo() {
                                     const e = document.querySelector(s);
                                     if (e) e.click();
                                 }, sel);
-                                await novaAba.waitForTimeout(600);
+                                await (novaAba.waitForTimeout ? novaAba.waitForTimeout(600) : new Promise(r => setTimeout(r, 600)));
                             }
                         } catch (e) { /* ignore per-selector errors */
                         }
@@ -936,5 +957,4 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
-
 
