@@ -836,7 +836,7 @@ async function iniciarRobo() {
 
             process.stderr.write(`[MAIN_LOOP] ❌ Erro no loop principal: ${e && e.message ? e.message : e}\n`);
         }
-    }, 10000);
+    }, 5000);
 
     function abrirPromptNovaAba() {
         if (process.stdin.isTTY) process.stdin.setRawMode(false);
