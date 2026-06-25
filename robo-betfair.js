@@ -115,13 +115,20 @@ async function iniciarRobo() {
         '--disable-setuid-sandbox',
         '--disable-gpu',
         '--disable-dev-shm-usage',
-        '--single-process',
+        '--js-flags=--max-old-space-size=150',
+        '--disk-cache-size=1',
+        '--media-cache-size=1',
         '--no-zygote',
+        '--headless=new', // Garante o novo motor headless isolado
         '--disable-accelerated-2d-canvas',
         '--disable-features=VizDisplayCompositor',
         '--disable-background-timer-throttling',
         '--disable-renderer-backgrounding',
-        '--disable-backgrounding-occluded-windows'
+        '--disable-backgrounding-occluded-windows',
+        '--disable-ipc-flooding-protection',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-extensions'
     ];
     const execPath = process.env.CHROME_PATH || undefined;
     const browser = await puppeteer.launch({
@@ -163,12 +170,13 @@ async function iniciarRobo() {
 
                         // Bloquear recursos pesados e scripts de terceiros conhecidos
                         const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
-                        if (!isWhitelisted) {
-                            if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
-                                if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
-                                return req.abort();
-                            }
+                        // Aggressive blocking for images/styles/fonts/media when not whitelisted
+                        if (!isWhitelisted && ['image', 'stylesheet', 'font', 'media'].includes(pt)) {
+                            if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                            return req.abort();
+                        }
 
+                        if (!isWhitelisted) {
                             if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
                                 if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
                                 return req.abort();
@@ -859,20 +867,20 @@ async function iniciarRobo() {
 
                             // Bloquear recursos pesados e scripts de terceiros conhecidos
                             const isWhitelisted = WHITELIST_HOSTNAMES.length > 0 && WHITELIST_HOSTNAMES.includes(hostname);
-                                    if (!isWhitelisted) {
-                                                if (pt === 'image' || pt === 'stylesheet' || pt === 'font') {
-                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
-                                                    return req.abort();
-                                                }
-                                                if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
-                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
-                                                    return req.abort();
-                                                }
-                                                // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
-                                                if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
-                                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
-                                                    return req.abort();
-                                                }
+                            if (!isWhitelisted && ['image', 'stylesheet', 'font', 'media'].includes(pt)) {
+                                if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                return req.abort();
+                            }
+                            if (!isWhitelisted) {
+                                if (pt === 'script' && (thirdPartyPattern.test(hostname) || thirdPartyPattern.test(url))) {
+                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                    return req.abort();
+                                }
+                                // Bloquear analytics/collect endpoints mesmo que sejam XHR/fetch
+                                if ((pt === 'xhr' || pt === 'fetch') && thirdPartyPattern.test(url)) {
+                                    if (DEBUG_BLOCKED) fs.appendFile('blocked_requests.log', `${new Date().toISOString()} ABORT ${pt} ${url}\n`, ()=>{});
+                                    return req.abort();
+                                }
                             }
 
                             // permitir o resto
