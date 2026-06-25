@@ -43,6 +43,27 @@ async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
             // give a small grace so a single evaluate timeout doesn't trigger the watchdog
             if (jogo) jogo._ultimaAtualizacao = Date.now();
         } catch (e) {}
+        // If the error is a detached frame (common when the page reloads or iframe is removed),
+        // try a safe fallback: run the evaluate on the top-level page (if available) once.
+        try {
+            const msg = (err && err.message) ? err.message.toLowerCase() : '';
+            if (msg.includes('detached') || msg.includes('detached frame') || msg.includes('frame is detached')) {
+                try {
+                    if (jogo && jogo.pageContext && typeof jogo.pageContext.evaluate === 'function' && jogo.pageContext !== frameOrPage) {
+                        process.stderr.write(`[WATCHDOG_HELPER] frame detached for id=${jogo.id}, retrying evaluate on top-level page\n`);
+                        const res2 = await Promise.race([
+                            jogo.pageContext.evaluate(fn, ...args),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timeout (fallback)')), EVAL_TIMEOUT_MS))
+                        ]);
+                        try { if (jogo) jogo._ultimaAtualizacao = Date.now(); } catch (e) {}
+                        return res2;
+                    }
+                } catch (e) {
+                    // fallback failed — will rethrow original error below
+                }
+            }
+        } catch (e) {}
+
         // rethrow so callers can still handle if needed
         throw err;
     }
