@@ -99,6 +99,35 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
             jogoUrl = jogo.url || (jogo.pageContext && typeof jogo.pageContext.url === 'function' ? jogo.pageContext.url() : null) || null;
         } catch (e) { jogoUrl = jogo.url || null; }
 
+        // Ensure momentum object always exists and has numeric defaults so frontend
+        // QUADRO 2 (momentum micro 10m) displays real micro values instead of
+        // falling back to macro totals or producing mixed/undefined values.
+        let momentum = Object.assign({
+             chutesNoAlvoCasa: 0,
+             chutesParaForaCasa: 0,
+             chutesNoAlvoFora: 0,
+             chutesParaForaFora: 0,
+             escanteiosCasa: 0,
+             escanteiosFora: 0,
+             ataquesCasa: 0,
+             ataquesFora: 0
+        }, (jogo.momentum && typeof jogo.momentum === 'object') ? jogo.momentum : {});
+
+        // Mitigação temporária: não expor momentum micro quando o jogo acabou de iniciar
+        // (minuto 0 ou 1). Isso evita que a UI mostre valores macro como se fossem micro.
+        if (typeof jogo.tempo === 'number' && jogo.tempo <= 1) {
+            momentum = {
+                chutesNoAlvoCasa: 0,
+                chutesParaForaCasa: 0,
+                chutesNoAlvoFora: 0,
+                chutesParaForaFora: 0,
+                escanteiosCasa: 0,
+                escanteiosFora: 0,
+                ataquesCasa: 0,
+                ataquesFora: 0
+            };
+        }
+
         listaJogos.push({
             id,
             nomePartida: jogo.nomePartida,
@@ -109,7 +138,7 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
             pressao: jogo.pressao,
             xgCasa: jogo.xgCasa,
             xgFora: jogo.xgFora,
-            momentum: jogo.momentum,
+            momentum,
             statusGatilho,
             posseBolaCasa: jogo.posseBolaCasa || 50,
             posseBolaFora: jogo.posseBolaFora || 50,
@@ -152,6 +181,22 @@ function atualizarDadosPainelWeb(poolDeJogos, alertasDisparadosPorJogo) {
         const withAnalysis = listaJogos.filter(j => j.engineAnalysis != null).length;
         console.log(`[LOGGER] Enviando ${listaJogos.length} jogos via SSE — engineAnalysis presente em ${withAnalysis}`);
     } catch (e) { /* ignore logging errors */ }
+
+    // dump payload for debugging momentum vs macro mismatch
+    try {
+        const dumpPath = path.join(__dirname, 'debug_last_payload.json');
+        fs.writeFileSync(dumpPath, JSON.stringify(listaJogos, null, 2));
+        // Also log any game where momentum fields appear non-zero at minute <= 1
+        listaJogos.forEach(j => {
+            try {
+                const m = j.momentum || {};
+                const hasMomentum = (Object.values(m).some(v => typeof v === 'number' && v > 0));
+                if (hasMomentum && (j.tempo == null || j.tempo <= 1)) {
+                    console.log(`[LOGGER_DBG] early-momentum id=${j.id} tempo=${j.tempo} momentum=${JSON.stringify(m)} macroChutes=${j.chutesNoAlvoCasa}/${j.chutesParaForaCasa} vs ${j.chutesNoAlvoFora}/${j.chutesParaForaFora} esc=${j.escanteiosCasa}/${j.escanteiosFora}`);
+                }
+            } catch (e) { /* per-item non-fatal */ }
+        });
+    } catch (e) { console.error('[LOGGER ERROR] dump payload failed', e && e.message); }
 
     // Notify any registered in-process callbacks about jogo updates (used by monitor_results)
     try {

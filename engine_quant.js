@@ -132,6 +132,15 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         jogo.momentum[key] = calcularMomentumMicro10(historico, minAtual);
     }
 
+    // Debug: log momentum values and historico lengths to help diagnose cases where
+    // momentum appears equal to macro totals immediately after match start.
+    try {
+        const lens = {};
+        for (const [k, h] of Object.entries(mapeamentoMomentum)) lens[k] = (h && h.length) || 0;
+        // Only log at debug level to avoid flooding; use console.log for immediate stdout visibility
+        console.log(`[MOMENTUM_DBG] id=${jogo.id} min=${minAtual} momentum=${JSON.stringify(jogo.momentum)} histLens=${JSON.stringify(lens)}`);
+    } catch (e) { /* non-fatal debug */ }
+
     const pesoChAlvo = 0.35; const pesoChFora = 0.15;
     const pesoEsc = 0.08;    const pesoAtq = 0.02;
 

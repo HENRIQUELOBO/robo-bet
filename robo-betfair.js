@@ -701,6 +701,24 @@ async function iniciarRobo() {
 
                         let minAtual = jogo.tempo;
 
+                        // limpar o histórico "micro 10m" a cada 10 minutos (para evitar crescimento indefinido)
+                        try {
+                            const entry = poolDeJogos.get(idJogo) || jogo;
+                            const lastClear = entry._lastMomentumClear || 0;
+                            if (minAtual > 0 && (minAtual % 10) === 0 && lastClear !== minAtual) {
+                                entry.historicoAtqCasa = [];
+                                entry.historicoAtqFora = [];
+                                entry.historicoEscCasa = [];
+                                entry.historicoEscFora = [];
+                                entry.historicoChAlvoCasa = [];
+                                entry.historicoChAlvoFora = [];
+                                entry.historicoChForaCasa = [];
+                                entry.historicoChForaFora = [];
+                                entry._lastMomentumClear = minAtual;
+                                process.stdout.write(`[MOMENTUM_CLEAR] id=${idJogo} limpou micro10m em ${minAtual}'\n`);
+                            }
+                        } catch (e) {}
+
                         if (!jogo.sincronizadoComFeed) {
                             jogo.ataquesPerigososCasa = r.atqC;
                             jogo.ataquesPerigososFora = r.atqF;
@@ -717,6 +735,9 @@ async function iniciarRobo() {
                         }
 
                         if (r.atqC < jogo.ataquesPerigososCasa && minAtual > 45) {
+                            // Feed aparenta ter sido reiniciado/ajustado (ex.: intervalo) —
+                            // ressincroniza acumulados e zera o momentum + históricos para
+                            // evitar que eventos do 1º tempo poluam o cálculo do 2º.
                             jogo.ataquesPerigososCasa = r.atqC;
                             jogo.ataquesPerigososFora = r.atqF;
                             jogo.escanteiosCasa = r.escC;
@@ -725,6 +746,30 @@ async function iniciarRobo() {
                             jogo.chutesNoAlvoFora = r.chF;
                             jogo.chutesParaForaCasa = r.chForaC;
                             jogo.chutesParaForaFora = r.chForaF;
+
+                            // limpar históricos que alimentam o momentum (micro10m)
+                            jogo.historicoAtqCasa = [];
+                            jogo.historicoAtqFora = [];
+                            jogo.historicoEscCasa = [];
+                            jogo.historicoEscFora = [];
+                            jogo.historicoChAlvoCasa = [];
+                            jogo.historicoChAlvoFora = [];
+                            jogo.historicoChForaCasa = [];
+                            jogo.historicoChForaFora = [];
+
+                            // zerar momentum imediatamente
+                            if (!jogo.momentum) jogo.momentum = {};
+                            jogo.momentum.ataquesCasa = 0;
+                            jogo.momentum.ataquesFora = 0;
+                            jogo.momentum.escanteiosCasa = 0;
+                            jogo.momentum.escanteiosFora = 0;
+                            jogo.momentum.chutesNoAlvoCasa = 0;
+                            jogo.momentum.chutesNoAlvoFora = 0;
+                            jogo.momentum.chutesParaForaCasa = 0;
+                            jogo.momentum.chutesParaForaFora = 0;
+
+                            // debug: registrar ressincronização
+                            try { process.stdout.write(`[RESYNC_FEED] id=${idJogo} ressincronizado e limpou históricos em ${minAtual}'\n`); } catch (e) {}
                         } else {
                             if (r.atqC > jogo.ataquesPerigososCasa) {
                                 let delta = r.atqC - jogo.ataquesPerigososCasa;

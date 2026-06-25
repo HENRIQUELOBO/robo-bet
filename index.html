@@ -200,10 +200,14 @@
 					_imgCache[jogo.id] = { ts: jogo.sofascoreMomentumTs, img: jogo.sofascoreMomentumImg };
 				}
 			}
-			const momentumImg = _imgCache[jogo.id]?.img || null;
-			const totalAtq = (jogo.momentum.ataquesCasa + jogo.momentum.ataquesFora) || 1;
-			const pctCasaAPM = Math.round((jogo.momentum.ataquesCasa / totalAtq) * 100);
-			const pctForaAPM = 100 - pctCasaAPM;
+
+			const totalAtqRaw = (Number(jogo.momentum.ataquesCasa) || 0) + (Number(jogo.momentum.ataquesFora) || 0);
+			let pctCasaAPM = 50;
+			let pctForaAPM = 50;
+			if (totalAtqRaw > 0) {
+				pctCasaAPM = Math.round((Number(jogo.momentum.ataquesCasa) / totalAtqRaw) * 100);
+				pctForaAPM = 100 - pctCasaAPM;
+			}
 
 			const posseCasa = parseInt(jogo.posseBolaCasa) || 50;
 			const posseFora = parseInt(jogo.posseBolaFora) || (100 - posseCasa);
