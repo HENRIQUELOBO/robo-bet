@@ -378,6 +378,24 @@ module.exports = (props) => {
                     res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' }); res.end(data);
                     return;
                 }
+
+                // Serve simple static assets from /asset/* (images, local js, css)
+                if (req.url.startsWith('/asset/') && req.method === 'GET') {
+                    const rel = req.url.replace(/^\/asset\//, '');
+                    const filePath = path.join(__dirname, 'asset', rel);
+                    if (!fs.existsSync(filePath)) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Not found'); return; }
+                    const ext = path.extname(filePath).toLowerCase();
+                    let mime = 'application/octet-stream';
+                    if (ext === '.js') mime = 'application/javascript';
+                    else if (ext === '.css') mime = 'text/css';
+                    else if (ext === '.png') mime = 'image/png';
+                    else if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+                    else if (ext === '.svg') mime = 'image/svg+xml';
+                    else if (ext === '.json') mime = 'application/json';
+                    const data = fs.readFileSync(filePath);
+                    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' }); res.end(data);
+                    return;
+                }
             } catch (e) {
                 // proceed to default 404
             }
