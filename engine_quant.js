@@ -542,18 +542,23 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
     }
     // attach analyzer snapshot to jogo for external consumption (logger / UI)
     try {
-        const snap = analyzer.get && typeof analyzer.get === 'function' ? analyzer.get() : null;
-        // ensure we never set null — keep previous value or set empty object
-        if (snap && Object.keys(snap).length > 0) {
-            jogo._engineAnalysis = snap;
+        if (typeof analyzer !== 'undefined' && analyzer && typeof analyzer.get === 'function') {
+            const snap = analyzer.get();
+            // ensure we never set null — keep previous value or set empty object
+            if (snap && Object.keys(snap).length > 0) {
+                jogo._engineAnalysis = snap;
+            } else {
+                // preserve existing _engineAnalysis if present, otherwise set to empty object
+                jogo._engineAnalysis = jogo._engineAnalysis && Object.keys(jogo._engineAnalysis || {}).length > 0
+                    ? jogo._engineAnalysis
+                    : {};
+            }
+            // lightweight debug to help detect why UI sees nulls
+            try { console.debug && console.debug('[ENGINE] attached _engineAnalysis for', jogo.id, 'methods=', Object.keys(jogo._engineAnalysis || {}).length); } catch (e) {}
         } else {
-            // preserve existing _engineAnalysis if present, otherwise set to empty object
-            jogo._engineAnalysis = jogo._engineAnalysis && Object.keys(jogo._engineAnalysis || {}).length > 0
-                ? jogo._engineAnalysis
-                : {};
+            // analyzer not defined due to earlier error; preserve existing _engineAnalysis
+            jogo._engineAnalysis = jogo._engineAnalysis && Object.keys(jogo._engineAnalysis || {}).length > 0 ? jogo._engineAnalysis : {};
         }
-        // lightweight debug to help detect why UI sees nulls
-        try { console.debug && console.debug('[ENGINE] attached _engineAnalysis for', jogo.id, 'methods=', Object.keys(jogo._engineAnalysis || {}).length); } catch (e) {}
     } catch (e) { /* non-fatal - keep existing state */ }
 
 }
