@@ -160,7 +160,6 @@ async function iniciarRobo() {
 
                 await novaAba.setRequestInterception(true);
                 const thirdPartyPattern = /goog(le|analytics)|doubleclick|analytics|tracker|track|ads|adservice|cdn-cgi|facebook|pixel|hotjar|mixpanel|segment|amplitude/i;
-                const allowedHostnames = [];
                 novaAba.on('request', req => {
                     const pt = req.resourceType();
                     const url = req.url();
@@ -322,7 +321,6 @@ async function iniciarRobo() {
             poolDeJogos.set(idJogo_unico, {
                 pageContext: novaAba,
                 nomePartida: 'Carregando...',
-                // URL original usada para iniciar o scanner
                 url: urlValida,
                 _ultimaAtualizacao: Date.now(),
                 _lastReload: Date.now(),
@@ -680,6 +678,21 @@ async function iniciarRobo() {
                         if (r.statusIntervalo) {
                             if (r.tempoLocal > 0 && r.tempoLocal >= jogo.tempo) jogo.tempo = r.tempoLocal;
                             if (r.placarLocal && r.placarLocal.includes('-')) jogo.placar = r.placarLocal;
+
+                            try {
+                                const entry = poolDeJogos.get(idJogo) || jogo;
+                                entry.momentum.ataquesCasa = 0;
+                                entry.momentum.ataquesFora = 0;
+                                entry.momentum.chutesNoAlvoCasa = 0;
+                                entry.momentum.chutesParaForaCasa = 0;
+                                entry.momentum.chutesNoAlvoFora = 0;
+                                entry.momentum.chutesParaForaFora = 0;
+                                entry.momentum.escanteiosCasa = 0;
+                                entry.momentum.escanteiosFora = 0;
+                                entry.posseBolaCasa = 0;
+                                entry.posseBolaFora = 0;
+                            } catch (e) { }
+
                             continue;
                         }
 
