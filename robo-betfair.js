@@ -48,6 +48,7 @@ async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
         try {
             const msg = (err && err.message) ? err.message.toLowerCase() : '';
             if (msg.includes('detached') || msg.includes('detached frame') || msg.includes('frame is detached')) {
+                // First try: evaluate on top-level pageContext if different
                 try {
                     if (jogo && jogo.pageContext && typeof jogo.pageContext.evaluate === 'function' && jogo.pageContext !== frameOrPage) {
                         process.stderr.write(`[WATCHDOG_HELPER] frame detached for id=${jogo.id}, retrying evaluate on top-level page\n`);
@@ -58,12 +59,62 @@ async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
                         try { if (jogo) jogo._ultimaAtualizacao = Date.now(); } catch (e) {}
                         return res2;
                     }
-                } catch (e) {
-                    // fallback failed — will rethrow original error below
-                }
+                } catch (e) { /* continue to recovery attempts below */ }
+
+                // Second try: attempt to reload the page (may reattach frames)
+                try {
+                    if (jogo && jogo.pageContext && typeof jogo.pageContext.reload === 'function') {
+                        process.stderr.write(`[WATCHDOG_HELPER] frame detached for id=${jogo.id}, attempting page.reload()\n`);
+                        await Promise.race([
+                            jogo.pageContext.reload({ waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('reload timeout')), EVAL_TIMEOUT_MS))
+                        ]);
+                        try { if (jogo) jogo._ultimaAtualizacao = Date.now(); } catch (e) {}
+                        // retry evaluate on reloaded context
+                        try {
+                            const res3 = await Promise.race([
+                                jogo.pageContext.evaluate(fn, ...args),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timeout (after reload)')), EVAL_TIMEOUT_MS))
+                            ]);
+                            return res3;
+                        } catch (e) {
+                            // fallthrough to recreate
+                        }
+                    }
+                } catch (e) { /* ignore reload failures */ }
+
+                // Third try: create a fresh page and navigate to jogo.url — best-effort recovery
+                try {
+                    if (globalBrowser && jogo && jogo.url) {
+                        process.stderr.write(`[WATCHDOG_HELPER] frame detached for id=${jogo.id}, attempting to recreate page\n`);
+                        try {
+                            const newPage = await globalBrowser.newPage();
+                            try { await newPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'); } catch(_){}
+                            await Promise.race([
+                                newPage.goto(String(jogo.url), { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('goto timeout')), EVAL_TIMEOUT_MS))
+                            ]);
+                            // replace pageContext on jogo so callers use fresh page
+                            try {
+                                if (jogo.pageContext && typeof jogo.pageContext.close === 'function') {
+                                    try { jogo.pageContext.close().catch(()=>{}); } catch(_){}
+                                }
+                            } catch(_){}
+                            jogo.pageContext = newPage;
+                            jogo._ultimaAtualizacao = Date.now();
+                            // final attempt to evaluate on new page
+                            const res4 = await Promise.race([
+                                newPage.evaluate(fn, ...args),
+                                new Promise((_, reject) => setTimeout(() => reject(new Error('evaluate timeout (new page)')), EVAL_TIMEOUT_MS))
+                            ]);
+                            return res4;
+                        } catch (eNew) {
+                            process.stderr.write(`[WATCHDOG_HELPER] recreate page failed for id=${jogo.id} -> ${eNew && eNew.message ? eNew.message : eNew}\n`);
+                        }
+                    }
+                } catch (e) { /* non-fatal */ }
             }
         } catch (e) {}
-
         // rethrow so callers can still handle if needed
         throw err;
     }
@@ -1006,7 +1057,7 @@ async function iniciarRobo() {
                 try {
                     const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
                     const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
-                    novaAba.on('console', msg => { try{ const t = msg.text ? msg.text() : String(msg); if (!/was preloaded using link preload but not used/i.test(t)) process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${t}\n`); }catch(_){} });
+                    novaAba.on('console', msg => { try{ const txt = msg.text ? msg.text() : String(msg); if (!/was preloaded using link preload but not used/i.test(txt)) process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${txt}\n`); }catch(_){} });
                     // Log failed requests for prompt-created pages as well
                     novaAba.on('requestfailed', request => {
                         try {
