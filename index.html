@@ -9,17 +9,13 @@
 	<script src="./asset/tailwindcss.js"></script>
 	<style>
 		@keyframes pulse-red { 0%, 100% { background-color: rgba(220, 38, 38, 1); border-color: rgba(239, 68, 68, 1); } 50% { background-color: rgba(153, 27, 27, 1); border-color: rgba(220, 38, 38, 1); } }
-		.alerta-ativo { animation: pulse-red 2s infinite; }
 		.text-3xs { font-size: 0.65rem; } .text-2xs { font-size: 0.75rem; }
 		#modal-momentum { display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.85); backdrop-filter:blur(4px); align-items:center; justify-content:center; }
 		#modal-momentum.open { display:flex; }
 		#modal-analysis { display:none; position:fixed; inset:0; z-index:10000; align-items:center; justify-content:center; }
 		#modal-analysis.open { display:flex; }
 		#modal-momentum img { max-width:92vw; max-height:88vh; border-radius:12px; border:1px solid #374151; box-shadow:0 0 60px rgba(0,0,0,0.8); }
-		.momentum-thumb { cursor:zoom-in; transition:opacity .2s; }
-		.momentum-thumb:hover { opacity:.85; }
-		.engine-badge { transition: transform .12s ease; }
-		.engine-badge:hover { transform: translateY(-2px); }
+		.green { color: #4ade80 !important; }
 	</style>
 </head>
 <body class="bg-gray-950 text-gray-100 font-sans min-h-screen">
@@ -425,7 +421,10 @@
 			content.innerHTML = debugHtml;
 			try { const t = document.getElementById('modal-analysis-title'); if (t) t.textContent = '🔬 Análise do Motor — Métodos'; } catch(e){}
 		} else {
-			content.innerHTML = renderEngineAnalysis(jogo, analysisSource, telegramMsg);
+			// use the tolerantAnalysis found (may be deeper in the payload) when available
+			// previously we passed the raw analysisSource which could be null while tolerantAnalysis
+			// contained the real analysis object — causing methods (e.g. LAY_DRAW) to not render.
+			content.innerHTML = renderEngineAnalysis(jogo, tolerantAnalysis || analysisSource, telegramMsg);
 		}
 		// Atualiza o título do modal com nome da partida, tempo atual e placar
 		try {
@@ -545,17 +544,35 @@
 			'FAVORITO_VIRA': ['janelaTempo', 'difGols>1', 'ataquesCasa<10', 'chutesNoAlvoCasa<2', 'aceleracaoNegativa', 'qualidadeBaixa']
 		};
 
+		// normalize analysis to an object map: methodName -> entry
+		let analysisMap = {};
+		try {
+			if (Array.isArray(analysis)) {
+				// array may contain objects like { method: 'GATILHO_1T', met: true, ... }
+				for (const item of analysis) {
+					if (!item) continue;
+					if (item.method) analysisMap[item.method] = item;
+					else if (typeof item === 'object') {
+						// merge keys if it's already a mapping-like object
+						for (const k of Object.keys(item)) { analysisMap[k] = item[k]; }
+					}
+				}
+			} else if (analysis && typeof analysis === 'object') {
+				analysisMap = analysis;
+			}
+		} catch (e) { analysisMap = (analysis && typeof analysis === 'object') ? analysis : {}; }
+
 		let html = '';
 		html += '<div class="space-y-3">';
 		const rawTempo = jogo && jogo.tempo ? String(jogo.tempo) : '';
 		const minAtual = parseInt((rawTempo || '').replace(/[^0-9]/g, ''), 10) || 0;
 		const hideFirstHalf = minAtual > 45; // if in second half hide first-half-only methods
 		const firstHalfMethods = new Set(['GATILHO_1T','GATILHO_1T_FORA']);
-		for (const method in analysis) {
+		for (const method in analysisMap) {
 			// omit legacy / removed methods that may still appear in stored analysis
 			if (String(method).toUpperCase() === 'LAY_0X0') continue;
 			if (hideFirstHalf && firstHalfMethods.has(method)) continue;
-			const entry = analysis[method] || { met: false, missing: [] };
+			const entry = analysisMap[method] || { met: false, missing: [] };
 			const statusBadge = entry.met ? '<span class="px-2 py-0.5 rounded bg-emerald-500 text-black font-bold text-2xs">SATISFEITO</span>' : '<span class="px-2 py-0.5 rounded bg-red-600 text-white font-bold text-2xs">FALTANDO</span>';
 			const periodLabel = methodPeriods[method] ? `<div class="text-2xs text-gray-400">${methodPeriods[method]}</div>` : '';
 			// accordion header for the method
@@ -578,44 +595,74 @@
 			}
 			const missing = Array.isArray(entry.missing) ? entry.missing.slice() : [];
 			// If entry.met is true, consider expected criteria satisfied (friendly UX)
+			// MERGE (don't overwrite) so we preserve any explicit satisfied items reported
 			if (entry.met && expected.length>0) {
-				satisfied = expected.slice();
+				try {
+					const merged = (expected || []).concat(satisfied || []);
+					// keep unique while preserving order
+					const uniq = [];
+					const seenU = new Set();
+					for (const x of merged) {
+						const k = String(x);
+						if (!seenU.has(k)) { seenU.add(k); uniq.push(x); }
+					}
+					satisfied = uniq;
+				} catch (e) { /* non-fatal: fallback to expected */ satisfied = expected.slice(); }
 			}
 			// Ensure time-window appears among expected for clarity
 			if (methodPeriods[method] && !expected.includes('janelaTempo')) expected.unshift('janelaTempo');
-			// union of keys preserving order: expected then satisfied missing extras
-			const seenCriteria = new Set();
+			// union of keys preserving order: expected then satisfied then missing extras
+			// Use a normalized key for deduplication so entries like 'janelaTempo' and
+			// objects with the same key but different display/value don't produce duplicates.
+			const seenCriteria = new Map(); // keyNorm -> index in allCriteria
 			const allCriteria = [];
-			for (const c of expected.concat(satisfied).concat(missing)) { if (!seenCriteria.has(String(c))) { seenCriteria.add(String(c)); allCriteria.push(c); } }
+			const getKeyNorm = (cRaw) => {
+				if (typeof cRaw === 'string') return String(cRaw.split(' - ')[0].split(' (')[0].split(':')[0].trim()).replace(/\s+/g, '');
+				if (cRaw && typeof cRaw === 'object') return String(cRaw.key || cRaw.criteria || cRaw.nome || cRaw.name || Object.keys(cRaw)[0]).replace(/\s+/g, '');
+				return String(cRaw).replace(/\s+/g, '');
+			};
+			const hasValue = (cRaw) => {
+				if (!cRaw) return false;
+				if (typeof cRaw === 'object') {
+					return cRaw.value != null || cRaw.valor != null || cRaw.valorAtual != null || cRaw.val != null || cRaw.v != null;
+				}
+				if (typeof cRaw === 'string') {
+					return /valor:|Valor atual:|\d+'|\d+\%/.test(cRaw);
+				}
+				return false;
+			};
+			const appendPreferValue = (cRaw) => {
+				const keyNorm = getKeyNorm(cRaw);
+				const idx = seenCriteria.get(keyNorm);
+				if (idx == null) {
+					seenCriteria.set(keyNorm, allCriteria.length);
+					allCriteria.push(cRaw);
+					return;
+				}
+				// prefer entries that contain a value/actual state over bare keys
+				const existing = allCriteria[idx];
+				if (!hasValue(existing) && hasValue(cRaw)) {
+					allCriteria[idx] = cRaw; // replace with more informative entry
+				}
+			};
+			for (const c of expected) appendPreferValue(c);
+			for (const c of satisfied) appendPreferValue(c);
+			for (const c of missing) appendPreferValue(c);
 			// criteria panel (hidden by default)
 			html += '<div class="method-panel" style="display:block;margin-bottom:6px;">';
 			html += '<ul class="mt-1 ml-3 list-disc list-inside text-2xs">';
 			for (const critRaw of allCriteria) {
-				// determine if this criterion is satisfied
-				const isSatisfied = satisfied && satisfied.some(s => String(s) === String(critRaw));
+				// determine a normalized key for this criterion and whether it's satisfied
+				let critKeyNorm = null;
+				if (typeof critRaw === 'string') {
+					critKeyNorm = critRaw.split(' - ')[0].split(' (')[0].split(':')[0].trim();
+				} else if (critRaw && typeof critRaw === 'object') {
+					critKeyNorm = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.name || Object.keys(critRaw)[0];
+				} else {
+					critKeyNorm = String(critRaw);
+				}
+
 				const isMissing = missing && missing.some(m => String(m) === String(critRaw));
-				// Fallback heuristics: mark time-window satisfied when current minute falls into method period
-				try {
-					if (!isSatisfied) {
-						const critKey = (typeof critRaw === 'string') ? critRaw : (critRaw && critRaw.key ? String(critRaw.key) : String(critRaw));
-						if (critKey === 'janelaTempo') {
-							const t = jogo && jogo.tempo ? parseInt(String(jogo.tempo).replace(/[^0-9]/g,''),10) : 0;
-							// simple range detection based on method name
-							if (method && String(method).includes('2T') && t >= 46 && t <= 85) {
-								// mark as satisfied (user is in 2nd half)
-								// mutate local satisfied copy so subsequent checks see it
-								satisfied.push('janelaTempo');
-								// update flag
-								// eslint-disable-next-line no-unused-vars
-								// continue
-							}
-						} else if (critKey.toLowerCase().includes('score') && (value !== null && value !== undefined && value !== '')) {
-							// if analyzer reported a numeric score/value, consider it satisfied for visibility
-							try { const num = parseFloat(value); if (!Number.isNaN(num) && num > 0) { satisfied.push(critKey); } } catch(_){}
-						}
-					}
-				} catch(e) { /* ignore heuristic errors */ }
-				// reuse previous parsing to derive friendly text and value
 				let crit = critRaw;
 				let value = null;
 				if (critRaw && typeof critRaw === 'object') {
@@ -661,8 +708,8 @@
 					line = friendlyText + suffix;
 				}
 				// color and link
-				const liClass = isSatisfied ? 'text-emerald-300' : (isMissing ? 'text-red-400' : 'text-amber-300');
-				const icon = isSatisfied ? '✅' : (isMissing ? '❌' : '⚪');
+				const liClass = (isMissing ? 'text-red-400' : 'green');
+				const icon = !isMissing ? '✅' : (isMissing ? '❌' : '⚪');
 				if (telegramMsg) html += `<li class="${liClass}"><span style="display:inline-block;width:20px">${icon}</span><a href="#" onclick="event.preventDefault(); openTelegramPreview('${escapeHtml(String(telegramMsg))}');" class="underline decoration-dotted">${line}</a></li>`;
 				else html += `<li class="${liClass}"><span style="display:inline-block;width:20px">${icon}</span>${line}</li>`;
 			}
@@ -799,6 +846,12 @@
 <style>
 	.engine-badge { transition: transform .12s ease; }
 	.engine-badge:hover { transform: translateY(-2px); }
+
+	/* Forçar tom verde claro para critérios satisfeitos no modal de análise
+		   Em alguns ambientes a classe utilitária pode não ser aplicada corretamente;
+		   usamos !important aqui para garantir visibilidade (texto verde ao invés de amarelo). */
+	.method-panel li.text-emerald-300 { color: #4ade80 !important; }
+	.method-panel li.text-emerald-300 a { color: #166534 !important; }
 </style>
 </body>
 </html>

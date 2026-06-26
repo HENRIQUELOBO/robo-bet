@@ -309,7 +309,6 @@ async function iniciarRobo() {
                     }
                 }, HEARTBEAT_MS);
 
-                // store heartbeat so graceful shutdown can clear it
                 jogoHeartbeat = {interval: hb};
                 // we'll attach the interval id into the page via the pool entry after creation below
             } catch (e) {}
@@ -1008,7 +1007,16 @@ async function iniciarRobo() {
                     const HEARTBEAT_MS = parseInt(process.env.HEARTBEAT_MS || '8000');
                     const HEARTBEAT_FAILS = parseInt(process.env.HEARTBEAT_FAILS || '3');
                     novaAba.on('console', msg => { try{ const t = msg.text ? msg.text() : String(msg); if (!/was preloaded using link preload but not used/i.test(t)) process.stderr.write(`[PAGE_CONSOLE id=${idJogo_unico}] ${t}\n`); }catch(_){} });
-                    novaAba.on('pageerror', err => { try{ process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); }catch(_){} });
+                    // Log failed requests for prompt-created pages as well
+                    novaAba.on('requestfailed', request => {
+                        try {
+                            const failure = request.failure && request.failure();
+                            const url = request.url();
+                            const method = request.method();
+                            process.stderr.write(`[PAGE_REQUEST_FAILED id=${idJogo_unico}] ${method} ${url} -> ${failure && failure.errorText ? failure.errorText : JSON.stringify(failure)}\n`);
+                        } catch (e) { /* non-fatal */ }
+                    });
+                novaAba.on('pageerror', err => { try{ process.stderr.write(`[PAGE_ERROR id=${idJogo_unico}] ${err && err.stack ? err.stack : err}\n`); }catch(_){} });
 
                     let hbFails = 0;
                     const hb = setInterval(async () => {

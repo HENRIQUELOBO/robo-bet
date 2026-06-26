@@ -116,37 +116,63 @@ function onJogoAtualizado(jogo) {
                 const antesFoiEmpate = (gCAnt === gFAnt);
                 const agoraEhEmpate = (gCNow === gFNow);
                 console.log(`[MONITOR] detectado alteração placar para sinal ${id}: antes=${normAntes} agora=${normAgora} (metodo=${s.metodo})`);
-                // Stronger rule for LAY_DRAW: if draw state changed (either draw->not-draw or not-draw->draw)
-                // resolve immediately: draw->not-draw = GREEN (lay succeeded), not-draw->draw = RED (lay failed)
-                if (metodoLow.includes('draw') || metodoLow.includes('lay_draw') || metodoLow.includes('lay draw')) {
+                // Stronger rule for LAY_DRAW (robust detection): if the signal is a lay-against-draw
+                // and the game moved from draw -> not-draw, resolve GREEN immediately; if moved to draw -> RED.
+                const isLayDraw = /lay.*draw|draw.*lay|lay_draw|lay draw|\bdraw\b|\bempate\b/i.test(String(s.metodo || ''));
+                if (isLayDraw) {
                     if (antesFoiEmpate !== agoraEhEmpate) {
                         if (antesFoiEmpate && !agoraEhEmpate) {
+                            // draw -> not-draw: lay succeeded
                             atualizarStatusCSV(id, 'GREEN', 'lay_draw_goal');
                         } else {
+                            // not-draw -> draw: lay failed
                             atualizarStatusCSV(id, 'RED', 'lay_draw_now_draw');
                         }
+                        pendentes.delete(id);
+                        continue;
+                    }
+                    // Also: if the signal was emitted while it was a draw (antesFoiEmpate)
+                    // and any goal happened (i.e., total goals increased) we should mark GREEN.
+                    const totalAntes = gCAnt + gFAnt;
+                    const totalAgora = gCNow + gFNow;
+                    if (antesFoiEmpate && totalAgora > totalAntes) {
+                        atualizarStatusCSV(id, 'GREEN', 'lay_draw_goal_any');
                         pendentes.delete(id);
                         continue;
                     }
                 }
 
                 let resolved = false;
-                // basic inference from metodo string
+                // basic inference from metodo string with special handling for 1T gatilhos
                 const metodo = metodoLow;
-                if (gCNow > gCAnt) {
-                    if (metodo.includes('casa') || metodo.includes('favorito') || metodo.includes('back')) {
-                        atualizarStatusCSV(id, 'GREEN');
-                    } else {
-                        atualizarStatusCSV(id, 'RED');
+                // If method is a GATILHO 1T variant, prefer 1T-specific resolution:
+                // - 'gatilho_1t' (or '1t') -> home-favoring; 'gatilho_1t_fora' or explicit 'fora' -> away-favoring
+                if (metodo.includes('gatilho_1t') || metodo.includes('1t')) {
+                    const isForAway = metodo.includes('fora') || metodo.includes('1t_fora') || metodo.includes('_fora');
+                    if (gCNow > gCAnt) {
+                        if (!isForAway) atualizarStatusCSV(id, 'GREEN'); else atualizarStatusCSV(id, 'RED');
+                        resolved = true;
+                    } else if (gFNow > gFAnt) {
+                        if (isForAway) atualizarStatusCSV(id, 'GREEN'); else atualizarStatusCSV(id, 'RED');
+                        resolved = true;
                     }
-                    resolved = true;
-                } else if (gFNow > gFAnt) {
-                    if (metodo.includes('fora') || metodo.includes('favorito') || metodo.includes('back')) {
-                        atualizarStatusCSV(id, 'GREEN');
-                    } else {
-                        atualizarStatusCSV(id, 'RED');
+                }
+                if (!resolved) {
+                    if (gCNow > gCAnt) {
+                        if (metodo.includes('casa') || metodo.includes('favorito') || metodo.includes('back')) {
+                            atualizarStatusCSV(id, 'GREEN');
+                        } else {
+                            atualizarStatusCSV(id, 'RED');
+                        }
+                        resolved = true;
+                    } else if (gFNow > gFAnt) {
+                        if (metodo.includes('fora') || metodo.includes('favorito') || metodo.includes('back')) {
+                            atualizarStatusCSV(id, 'GREEN');
+                        } else {
+                            atualizarStatusCSV(id, 'RED');
+                        }
+                        resolved = true;
                     }
-                    resolved = true;
                 }
 
                 if (resolved) pendentes.delete(id);
