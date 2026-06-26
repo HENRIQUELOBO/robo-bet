@@ -433,7 +433,7 @@ async function iniciarRobo() {
                 // Stagger checks per jogo to avoid picos quando há muitos jogos
                 try {
                     const now = Date.now();
-                    const perGameInterval = 10000; // mínimo entre checks por jogo (ms)
+                    const perGameInterval = 1000; // mínimo entre checks por jogo (ms)
                     const jitter = jogo._jitter || (jogo._jitter = Math.floor(Math.random() * 3000));
                     if (jogo._lastCheck && (now - jogo._lastCheck) < (perGameInterval + jitter)) {
                         continue;

@@ -657,7 +657,7 @@
 				if (typeof critRaw === 'string') {
 					critKeyNorm = critRaw.split(' - ')[0].split(' (')[0].split(':')[0].trim();
 				} else if (critRaw && typeof critRaw === 'object') {
-					critKeyNorm = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.name || Object.keys(critRaw)[0];
+					critKeyNorm = critRaw.key || critRaw.criteria || critRaw.nome || critRaw.descricao || critRaw.value || critRaw.name || Object.keys(critRaw)[0];
 				} else {
 					critKeyNorm = String(critRaw);
 				}
@@ -676,6 +676,22 @@
 						if (m2) value = m2[1];
 					}
 					crit = s.split(' - ')[0].split(' (')[0].split(':')[0].trim();
+				}
+				// If value not found yet, try to extract from the entry object (engine may report values separately)
+				if ((value === null || value === undefined || value === '') && entry && typeof entry === 'object') {
+					const keyLookup = String(critKeyNorm || crit).trim();
+					// common places where analyzer may store current values
+					value = entry[keyLookup] ?? entry.values?.[keyLookup] ?? entry.valorAtual ?? entry.valor ?? entry.value ?? (entry.satisfied && entry.satisfied[keyLookup]) ?? null;
+					// sometimes satisfied is object mapping keys to { value }
+					if (!value && entry.satisfied && typeof entry.satisfied === 'object' && entry.satisfied[keyLookup] && typeof entry.satisfied[keyLookup] === 'object') {
+						value = entry.satisfied[keyLookup].value ?? entry.satisfied[keyLookup].valor ?? null;
+					}
+				}
+				// For janelaTempo specifically, prefer to show the actual jogo minute when possible
+				if ((crit === 'janelaTempo' || String(crit).toLowerCase().includes('janela')) && (value === null || value === undefined || value === '')) {
+					// entry may carry a tempo-like field, otherwise fallback to jogo.tempo
+					value = (entry && (entry.janelaTempo || entry.tempo || entry.valorAtual || entry.value)) || (jogo && jogo.tempo) || value;
+					if (value === null || value === undefined) value = '';
 				}
 				const normCrit = String(crit).replace(/\s+/g, '');
 				let friendlyText = friendly[crit] || friendly[normCrit] || null;
