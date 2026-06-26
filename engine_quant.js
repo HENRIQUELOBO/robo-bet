@@ -138,7 +138,7 @@ function processarMotorDeRegras(idJogo, jogo, alertas) {
         const lens = {};
         for (const [k, h] of Object.entries(mapeamentoMomentum)) lens[k] = (h && h.length) || 0;
         // Only log at debug level to avoid flooding; use console.log for immediate stdout visibility
-        console.log(`[MOMENTUM_DBG] id=${jogo.id} min=${minAtual} momentum=${JSON.stringify(jogo.momentum)} histLens=${JSON.stringify(lens)}`);
+        // console.log(`[MOMENTUM_DBG] id=${jogo.id} min=${minAtual} momentum=${JSON.stringify(jogo.momentum)} histLens=${JSON.stringify(lens)}`);
     } catch (e) { /* non-fatal debug */ }
 
     const pesoChAlvo = 0.35; const pesoChFora = 0.15;

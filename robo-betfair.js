@@ -331,6 +331,13 @@ async function iniciarRobo() {
                 } catch (e) {}
             });
             novaAba.on('close', () => {
+                try {
+                    const maybe = poolDeJogos.get(idJogo_unico);
+                    if (maybe && maybe._encerrando) {
+                        process.stderr.write(`[PAGE] aba id=${idJogo_unico} fechada (encerrando)\n`);
+                        return;
+                    }
+                } catch (e) {}
                 process.stderr.write(`[PAGE] aba id=${idJogo_unico} fechada inesperadamente. Forçando restart.\n`);
                 try { if (globalBrowser) globalBrowser.close().catch(()=>{}); } catch(e){}
                 process.exit(1);
@@ -393,7 +400,7 @@ async function iniciarRobo() {
                 _encerrando: false
             });
 
-            // attach heartbeat interval reference into pool entry so we can clear on shutdown
+            // attach heartbeat interval reference into the pool entry if present
             try {
                 const entry = poolDeJogos.get(idJogo_unico);
                 if (entry && typeof jogoHeartbeat !== 'undefined' && jogoHeartbeat && jogoHeartbeat.interval) entry._heartbeat = jogoHeartbeat.interval;
@@ -1163,4 +1170,6 @@ process.on('exit', () => {
 });
 
 iniciarRobo().catch(err => console.error(err));
+
+
 
