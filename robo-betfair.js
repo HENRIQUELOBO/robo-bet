@@ -85,7 +85,8 @@ async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
 
                 // Third try: create a fresh page and navigate to jogo.url — best-effort recovery
                 try {
-                    if (globalBrowser && jogo && jogo.url) {
+                    // Only attempt to recreate a page if the browser connection is still alive.
+                    if (globalBrowser && typeof globalBrowser.isConnected === 'function' && globalBrowser.isConnected() && jogo && jogo.url) {
                         process.stderr.write(`[WATCHDOG_HELPER] frame detached for id=${jogo.id}, attempting to recreate page\n`);
                         try {
                             const newPage = await globalBrowser.newPage();
@@ -109,7 +110,9 @@ async function safeEvaluateWithWatchdog(jogo, frameOrPage, fn, ...args) {
                             ]);
                             return res4;
                         } catch (eNew) {
-                            process.stderr.write(`[WATCHDOG_HELPER] recreate page failed for id=${jogo.id} -> ${eNew && eNew.message ? eNew.message : eNew}\n`);
+                            // If recreate failed, include a hint if the browser is disconnected
+                            const browserState = (globalBrowser && typeof globalBrowser.isConnected === 'function' && !globalBrowser.isConnected()) ? 'browser-disconnected' : 'browser-connected';
+                            process.stderr.write(`[WATCHDOG_HELPER] recreate page failed for id=${jogo.id} (${browserState}) -> ${eNew && eNew.message ? eNew.message : eNew}\n`);
                         }
                     }
                 } catch (e) { /* non-fatal */ }
